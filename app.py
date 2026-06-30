@@ -2,7 +2,7 @@ import os
 import uuid
 import json
 import threading
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file, Response, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -115,7 +115,7 @@ def extract_frames_base64(video_path, shot, num_frames=8):
 
 @app.route('/')
 def index():
-    return app.send_static_file('index.html') if os.path.exists('static/index.html') else "Shot-by-Shot Processing"
+    return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_video():

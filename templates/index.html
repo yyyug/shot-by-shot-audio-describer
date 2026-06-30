@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shot-by-Shot Video Processor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Shot-by-Shot Video Processor</h1>
+        
+        <form id="uploadForm">
+            <div class="form-group">
+                <label for="video">Video File (MP4):</label>
+                <input type="file" id="video" name="video" accept="video/mp4" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="whisper_path">Whisper.cpp Path:</label>
+                <input type="text" id="whisper_path" name="whisper_path" value="whisper-cpp">
+            </div>
+            
+            <div class="form-group">
+                <label for="model_path">Whisper Model Path (optional):</label>
+                <input type="text" id="model_path" name="model_path" placeholder="e.g., models/ggml-medium.bin">
+            </div>
+            
+            <div class="form-group">
+                <label for="language">Language (optional):</label>
+                <input type="text" id="language" name="language" placeholder="e.g., en, zh">
+            </div>
+            
+            <div class="form-group">
+                <label for="openrouter_key">OpenRouter API Key (optional for VLM):</label>
+                <input type="password" id="openrouter_key" name="openrouter_key">
+            </div>
+            
+            <div class="form-group">
+                <label for="format">Output Format:</label>
+                <select id="format" name="format">
+                    <option value="basic">Basic (shot_id, start, end, subtitle)</option>
+                    <option value="full">Full (with video description)</option>
+                    <option value="original">Original project format</option>
+                </select>
+            </div>
+            
+            <button type="submit">Process Video</button>
+        </form>
+        
+        <div id="progress" class="hidden">
+            <h2>Processing...</h2>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <p id="progressText">Initializing...</p>
+        </div>
+        
+        <div id="result" class="hidden">
+            <h2>Complete!</h2>
+            <a id="downloadLink" href="#" class="download-btn">Download CSV</a>
+        </div>
+        
+        <div id="error" class="hidden">
+            <h2>Error</h2>
+            <p id="errorText"></p>
+        </div>
+    </div>
+    
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            
+            document.getElementById('progress').classList.remove('hidden');
+            document.getElementById('result').classList.add('hidden');
+            document.getElementById('error').classList.add('hidden');
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    const taskId = data.task_id;
+                    const eventSource = new EventSource(`/progress/${taskId}`);
+                    
+                    eventSource.onmessage = (event) => {
+                        const status = JSON.parse(event.data);
+                        
+                        if (status.status === 'completed') {
+                            eventSource.close();
+                            document.getElementById('progress').classList.add('hidden');
+                            document.getElementById('result').classList.remove('hidden');
+                            document.getElementById('downloadLink').href = `/download/${taskId}`;
+                        } else if (status.status === 'failed') {
+                            eventSource.close();
+                            document.getElementById('progress').classList.add('hidden');
+                            document.getElementById('error').classList.remove('hidden');
+                            document.getElementById('errorText').textContent = status.error;
+                        } else {
+                            document.getElementById('progressFill').style.width = `${status.progress}%`;
+                            document.getElementById('progressText').textContent = 
+                                `${status.step}: ${status.progress}%`;
+                        }
+                    };
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                document.getElementById('progress').classList.add('hidden');
+                document.getElementById('error').classList.remove('hidden');
+                document.getElementById('errorText').textContent = error.message;
+            }
+        });
+    </script>
+</body>
+</html>
