@@ -1,0 +1,6 @@
+flask>=2.3.0
+flask-cors>=4.0.0
+scenedetect>=0.6.0
+pandas>=1.5.0
+requests>=2.31.0
+werkzeug>=2.3.0
