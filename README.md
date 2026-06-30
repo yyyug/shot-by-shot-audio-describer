@@ -1,118 +1,183 @@
-# Shot🎞️-by-Shot🎞️: Film-Grammar-Aware Training-Free Audio Description Generation
+# Shot-by-Shot: 影片逐鏡頭分析工具 / Video Shot-by-Shot Analysis Tool
 
-Junyu Xie<sup>1</sup>, Tengda Han<sup>1</sup>, Max Bain<sup>1</sup>, Arsha Nagrani<sup>1</sup>, Eshika Khandelwal<sup>2</sup> <sup>3</sup>, Gül Varol<sup>1</sup> <sup>3</sup>, Weidi Xie<sup>1</sup> <sup>4</sup>, Andrew Zisserman<sup>1</sup>
+[English](#english) | [中文](#中文)
 
-<sup>1</sup> Visual Geometry Group, Department of Engineering Science, University of Oxford <br>
-<sup>2</sup> CVIT, IIIT Hyderabad <br>
-<sup>3</sup> LIGM, École des Ponts, Univ Gustave Eiffel, CNRS <br>
-<sup>4</sup> CMIC, Shanghai Jiao Tong University
+---
 
-<a src="https://img.shields.io/badge/cs.CV-2504.01020-b31b1b?logo=arxiv&logoColor=red" href="https://arxiv.org/abs/2504.01020">  
-<img src="https://img.shields.io/badge/cs.CV-2504.01020-b31b1b?logo=arxiv&logoColor=red"></a>
-<a href="https://www.robots.ox.ac.uk/~vgg/research/shot-by-shot/" alt="Project page"> 
-<img alt="Project page" src="https://img.shields.io/badge/project_page-shot--by--shot-blue"></a>
-<br>
-<br>
-<p align="center">
-  <img src="resources/assets/teaser.PNG"  width="750"/>
-</p>
+## English
 
+### Overview
 
+This tool processes video files to generate shot-by-shot analysis with:
+- Shot boundary detection
+- Audio transcription (subtitles)
+- Optional AI-powered video descriptions
 
-## Datasets and Results
-In this work, we evaluate our model on common AD benchmarks including [CMD-AD](https://www.robots.ox.ac.uk/~vgg/research/autoad/), [MAD-Eval](https://github.com/Soldelli/MAD), and [TV-AD](https://www.robots.ox.ac.uk/~vgg/research/autoad-zero/#tvad).
-#### Video Frames
-* **CMD-AD** can be downloaded [here](https://github.com/TengdaHan/AutoAD/tree/main/autoad_iii). 
-* **MAD-Eval** can be downloaded [here](https://github.com/Soldelli/MAD).
-* **TV-AD** can be downloaded following instructions [here](https://github.com/Jyxarthur/AutoAD-Zero).
-#### Ground Truth AD Annotations
-* All annotations can be found in `resources/annotations/`.
+### Prerequisites
 
-#### Predicted ADs
-* The AD predictions (by Qwen2-VL+LLaMA3 or GPT-4o+GPT-4o) can be downloaded [here](https://drive.google.com/drive/folders/1glNKnEamZG372TR03Nnw4MTErpzjW-6g?usp=sharing).
+- Python 3.8+
+- FFmpeg (for video processing)
+- whisper.cpp (for transcription, optional)
+- OpenRouter API key (for AI descriptions, optional)
 
+### Installation
 
-## Action Score
-We propose a new evaluation metric, named "action score", that focuses on whether a specific ground truth (GT) action is captured within the prediction. 
-<!--It is <br> -->
-<!--<b>(i)</b> character-free, meaning that the presence of character names has minimal impact <br>-->
-<!--<b>(ii)</b> recall-oriented, without penalising additional action information in the prediction-->
+```bash
+# Clone the repository
+git clone https://github.com/Jyxarthur/shot-by-shot.git
+cd shot-by-shot
 
-The detailed evaluation code can be found in `action_score/`.
+# Install Python dependencies
+pip install -r requirements.txt
 
-
-## Audio Description (AD) Generation
-
-#### Requirements
-* **Basic Dependencies:** ```python>=3.8```, ```pytorch=2.1.2```, ```transformers=4.46.0```, ```Pillow```, ```pandas```, ```decord```, ```opencv```
-
-* For inference based on open-sourced models, set up path for cache (for Qwen2-VL, LLaMA3, etc.) by modifying `os.environ['TRANSFORMERS_CACHE'] = "/path/to/cache/"` in `stage1/main_qwen2vl.py` and `stage2/main_llama3.py`
-
-* For inference based on proprietary GPT-4o models, set up path for API keys by modifying `os.environ["OPENAI_API_KEY"] = <open-api-key>` in `stage1/main_gpt4o.py` and `stage2/main_gpt4o.py`
-
-
-
-#### Preprocessing
-To structure the context frames according to shots, as well as recognise characters in each shot, please refer to guideline in `preprocess/`. <br>
-<span style="color:gray"><i>(This step can be skipped by directly referred to the pre-computed results in the form </i> `resources/annotations/{dataset}_anno_context-3.0-8.0_face-0.2-0.4.csv`<i>)</i></span>
-
-#### Film Grammar Prediction
-To predict the film grammar including shot scales and thread structures, please follow the steps detailed in `film_grammar/`. <br>
-<span style="color:gray"><i>(This step can be skipped by directly referred to the pre-computed results in the form </i> `resources/annotations/{dataset}_anno_context-3.0-8.0_face-0.2-0.4_scale_thread.csv`<i>)</i></span>
-
-#### Inference
-###### - Generating Dense Description by VLM (Stage I)
-```
-python stage1/main_qwen2vl.py \  # or stage1/main_gpt4o.py to run with GPT-4o
---dataset={dataset} \            # e.g., "cmdad"
---anno_path={anno_path}          # e.g., "resources/annotations/cmdad_anno_context-3.0-8.0_face-0.2-0.4_scale_thread.csv" \
---charbank_path={charbank_path}  # e.g., "resources/charbanks/cmdad_charbank.json" \
---video_dir={video_dir} \
---save_dir="{save_dir} \
---font_path="resources/fonts/times.ttf" \
---shot_label 
-```
-`--dataset`: choices are `cmdad`, `madeval`, and `tvad`. <br>
-`--anno_path`: path to AD annotations *(with character recognition results and film grammar predictions)*, available in `resources/annotations`. <br>
-`--charbank_path`: path to external character banks, available in `resources/charbanks/`. <br>
-`--video_dir`: directory of video datasets, example file structures can be found in `resources/example_file_structures` (files are empty, for references only). <br>
-`--save_dir`: directory to save output csv. <br>
-`--font_path`: path to font file for shot labels (default is Times New Roman) <br>
-`--shot_label`: add shot number label at the top-left of each frame  <br> 
-
-###### - Generating AD Sentence by LLM (Stage II)
-```
-python stage2/main_llama3.py \  # or stage2/main_gpt4o.py to run with GPT-4o
---dataset={dataset} \           # e.g., "cmdad"
---mode={mode} \                 # e.g., "single"
---pred_path={pred_path} \       
---save_dir={save_dir} 
-```
-`--dataset`: choices are `cmdad`, `madeval`, and `tvad`. <br>
-`--mode`: `single` for single AD output; `assistant` for five candidate AD outputs <br>
-`--pred_path`: path to the stage1 saved csv file. <br>
-`--save_dir`: directory to save output csv. <br>
-
-
-
-
-
-## Citation
-If you find this repository helpful, please consider citing our work! &#128522;
-```
-@InProceedings{xie2025shotbyshot,
-    title     =	{Shot-by-Shot: Film-Grammar-Aware Training-Free Audio Description Generation},
-    author    = {Junyu Xie and Tengda Han and Max Bain and Arsha Nagrani and Eshika Khandelwal and G\"ul Varol and Weidi Xie and Andrew Zisserman},
-    booktitle = {ICCV},  
-    year      = {2025}
-}
+# Install whisper.cpp (optional)
+# Follow instructions at: https://github.com/ggerganov/whisper.cpp
 ```
 
-## References
-Qwen2-VL: [https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct) <br>
-LLaMA3: [https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct) <br>
-GPT-4o: [https://openai.com/api/](https://openai.com/api/) <br>
+### Usage
 
+#### Web Interface
 
+```bash
+python app.py
+```
 
+Open http://localhost:5000 in your browser.
 
+#### Command Line
+
+```bash
+# Basic usage (shot detection + transcription)
+python run_processing.py video.mp4 -o output.csv
+
+# With VLM descriptions
+python run_processing.py video.mp4 -o output.csv --openrouter-key YOUR_API_KEY
+
+# Specify whisper.cpp path
+python run_processing.py video.mp4 -o output.csv --whisper-path /path/to/whisper-cpp
+
+# Full options
+python run_processing.py video.mp4 \
+    -o output.csv \
+    --whisper-path /path/to/whisper-cpp \
+    --model-path models/ggml-medium.bin \
+    --language en \
+    --openrouter-key YOUR_API_KEY \
+    --format full
+```
+
+#### Kaggle
+
+1. Upload `kaggle_notebook.ipynb` to Kaggle
+2. Add your video as a dataset input
+3. Set `OPENROUTER_API_KEY` in Cell 3
+4. Run all cells
+5. Download output CSV
+
+### Output Formats
+
+| Format | Columns |
+|--------|---------|
+| basic | shot_id, start_time, end_time, subtitle |
+| full | shot_id, start_time, end_time, subtitle, video_description |
+| original | anno_idx, imdbid, start, end, text_gen |
+
+### Configuration
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| --whisper-path | Path to whisper-cpp binary | whisper-cpp |
+| --model-path | Path to whisper model file | None (uses default) |
+| --language | Language code (en, zh, etc.) | None (auto-detect) |
+| --openrouter-key | OpenRouter API key | None (skip VLM) |
+| --format | Output format | basic |
+
+---
+
+## 中文
+
+### 概述
+
+此工具用於處理影片檔案，生成逐鏡頭分析，包括：
+- 鏡頭邊界檢測
+- 音訊轉錄（字幕）
+- 可選的 AI 影片描述
+
+### 系統要求
+
+- Python 3.8+
+- FFmpeg（用於影片處理）
+- whisper.cpp（用於轉錄，可選）
+- OpenRouter API 金鑰（用於 AI 描述，可選）
+
+### 安裝
+
+```bash
+# 複製儲存庫
+git clone https://github.com/Jyxarthur/shot-by-shot.git
+cd shot-by-shot
+
+# 安裝 Python 依賴
+pip install -r requirements.txt
+
+# 安裝 whisper.cpp（可選）
+# 請參考：https://github.com/ggerganov/whisper.cpp
+```
+
+### 使用方法
+
+#### 網頁介面
+
+```bash
+python app.py
+```
+
+在瀏覽器中開啟 http://localhost:5000
+
+#### 命令列
+
+```bash
+# 基本用法（鏡頭檢測 + 轉錄）
+python run_processing.py video.mp4 -o output.csv
+
+# 加入 AI 描述
+python run_processing.py video.mp4 -o output.csv --openrouter-key YOUR_API_KEY
+
+# 指定 whisper.cpp 路徑
+python run_processing.py video.mp4 -o output.csv --whisper-path /path/to/whisper-cpp
+
+# 完整選項
+python run_processing.py video.mp4 \
+    -o output.csv \
+    --whisper-path /path/to/whisper-cpp \
+    --model-path models/ggml-medium.bin \
+    --language en \
+    --openrouter-key YOUR_API_KEY \
+    --format full
+```
+
+#### Kaggle
+
+1. 將 `kaggle_notebook.ipynb` 上傳到 Kaggle
+2. 將您的影片作為資料集輸入
+3. 在第 3 格設定 `OPENROUTER_API_KEY`
+4. 執行所有儲存格
+5. 下載輸出 CSV
+
+### 輸出格式
+
+| 格式 | 欄位 |
+|------|------|
+| basic | shot_id, start_time, end_time, subtitle |
+| full | shot_id, start_time, end_time, subtitle, video_description |
+| original | anno_idx, imdbid, start, end, text_gen |
+
+### 設定選項
+
+| 選項 | 說明 | 預設值 |
+|------|------|--------|
+| --whisper-path | whisper-cpp 執行檔路徑 | whisper-cpp |
+| --model-path | whisper 模型檔案路徑 | None（使用預設） |
+| --language | 語言代碼（en, zh 等） | None（自動偵測） |
+| --openrouter-key | OpenRouter API 金鑰 | None（跳過 AI 描述） |
+| --format | 輸出格式 | basic |
