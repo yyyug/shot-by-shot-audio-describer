@@ -1,4 +1,4 @@
-# Shot-by-Shot: 影片逐鏡頭分析工具 / Video Shot-by-Shot Analysis Tool
+# Shot-by-Shot: 影片逐鏡頭分析工具 / Video Shot-by-Shot Audio Describer
 
 [English](#english) | [中文](#中文)
 

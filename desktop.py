@@ -394,7 +394,7 @@ def main():
     
     # Create window with HTML content
     window = webview.create_window(
-        title="Shot-by-Shot Video Processor",
+        title="Shot-by-Shot Audio Describer",
         html=html_content,
         js_api=bridge,
         width=1200,
