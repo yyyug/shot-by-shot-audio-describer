@@ -42,7 +42,7 @@ def transcribe_video(
     
     # Default model path
     if model_path is None:
-        model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'whisper', 'ggml-small.bin')
+        model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'whisper', 'ggml-small-q5_1.bin')
     
     # Create temporary directory for output
     with tempfile.TemporaryDirectory() as tmpdir:
