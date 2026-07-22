@@ -5,7 +5,7 @@ import numpy as np
 class PromptLoader():
     def __init__(self, prompt_idx, video_type, label_type):
         self.prompt_idx = prompt_idx
-        self.video_type = video_type
+        self.video_type = video_type  # "movie", "TV series", or "stage performance"
         self.label_type = label_type
 
     
@@ -70,6 +70,12 @@ class PromptLoader():
                 f"{thread_text}"
                 "Note, colored {label_type} are provided for character indications only, DO NOT mention them in the description. "   
                 "Make sure you do not hallucinate information.\n"
+                "Only describe what is directly visible.\n"
+                "Never infer intention, choreography, emotion, or unseen actions.\n"
+                "Do not assume movement belongs to an object when it could be caused by camera motion.\n"
+                "Separate observations from interpretations.\n"
+                "Determine if the clip is a stage performance or concert. If it is, vividly describe it by analyzing the singer's trajectory (position, facing direction, posture, and arm movements), the dancers' synchronization, the theatrical stage mechanisms, and the atmospheric lighting design.\n"
+                "Provide the result in Traditional Chinese.\n"
                 f"{template}"
             ) 
             general_prompt = general_prompt.format(video_type=self.video_type, char_text=char_text, label_type=self.label_type)
@@ -100,7 +106,13 @@ class PromptLoader():
                 "4. Describe the environment, focusing on the location, furniture, entrances and exits, etc.\n"
                 f"{thread_text}"
                 "Note, colored {label_type} are provided for character indications only, DO NOT mention them in the description. "
-                "Make sure you do not hallucinate information.\n"   
+                "Make sure you do not hallucinate information.\n"
+                "Only describe what is directly visible.\n"
+                "Never infer intention, choreography, emotion, or unseen actions.\n"
+                "Do not assume movement belongs to an object when it could be caused by camera motion.\n"
+                "Separate observations from interpretations.\n"
+                "Determine if the clip is a stage performance or concert. If it is, vividly describe it by analyzing the singer's trajectory (position, facing direction, posture, and arm movements), the dancers' synchronization, the theatrical stage mechanisms, and the atmospheric lighting design.\n"
+                "Provide the result in Traditional Chinese.\n"
                 f"{template}"
             ) 
             general_prompt = general_prompt.format(video_type=self.video_type, char_text=char_text, label_type=self.label_type)
@@ -133,6 +145,12 @@ class PromptLoader():
                 f"{thread_text}"
                 "Note, colored {label_type} are provided for character indications only, DO NOT mention them in the description. "   
                 "Make sure you do not hallucinate information.\n"
+                "Only describe what is directly visible.\n"
+                "Never infer intention, choreography, emotion, or unseen actions.\n"
+                "Do not assume movement belongs to an object when it could be caused by camera motion.\n"
+                "Separate observations from interpretations.\n"
+                "Determine if the clip is a stage performance or concert. If it is, vividly describe it by analyzing the singer's trajectory (position, facing direction, posture, and arm movements), the dancers' synchronization, the theatrical stage mechanisms, and the atmospheric lighting design.\n"
+                "Provide the result in Traditional Chinese.\n"
                 f"{template}"
             ) 
             general_prompt = general_prompt.format(video_type=self.video_type, char_text=char_text, label_type=self.label_type)
@@ -164,6 +182,12 @@ class PromptLoader():
                 f"{thread_text}"
                 "Note, colored {label_type} are provided for character indications only, DO NOT mention them in the description. "   
                 "Make sure you do not hallucinate information.\n"
+                "Only describe what is directly visible.\n"
+                "Never infer intention, choreography, emotion, or unseen actions.\n"
+                "Do not assume movement belongs to an object when it could be caused by camera motion.\n"
+                "Separate observations from interpretations.\n"
+                "Determine if the clip is a stage performance or concert. If it is, vividly describe it by analyzing the singer's trajectory (position, facing direction, posture, and arm movements), the dancers' synchronization, the theatrical stage mechanisms, and the atmospheric lighting design.\n"
+                "Provide the result in Traditional Chinese.\n"
                 f"{template}"
             ) 
             general_prompt = general_prompt.format(video_type=self.video_type, char_text=char_text, label_type=self.label_type)

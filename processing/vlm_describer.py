@@ -1,88 +1,199 @@
+"""
+VLM Describer - supports Gemini, OpenRouter, and OpenAI backends
+"""
 import base64
-import requests
 import time
-from typing import List, Optional
+import logging
+import requests
+from typing import List, Optional, Dict
+from io import BytesIO
+from PIL import Image
 
+logger = logging.getLogger(__name__)
+
+# Import original repo prompt class
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'stage1'))
+
+from promptloader import PromptLoader
+
+# API URLs
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
-def describe_frames(
-    frames_base64: List[str],
-    api_key: str,
-    model: str = "qwen/qwen-2.5-vl-7b-instruct:free",
-    prompt: str = None,
-    max_retries: int = 3,
-    retry_delay: float = 1.0
+
+def build_film_grammar_prompt(
+    video_type: str = "movie",
+    label_type: str = "circles",
+    char_text: str = "",
+    current_shots: List[int] = None,
+    threads: List[List[int]] = None,
+    shot_scales: List[int] = None,
+    prompt_variant: int = None
 ) -> str:
     """
-    Describe video frames using OpenRouter API with Qwen 2.5 VL.
-
-    Args:
-        frames_base64: List of base64-encoded JPEG images
-        api_key: OpenRouter API key
-        model: Model identifier (default: qwen/qwen-2.5-vl-7b-instruct:free)
-        prompt: Custom prompt (default uses project template)
-        max_retries: Number of retry attempts on failure
-        retry_delay: Delay between retries in seconds
-
-    Returns:
-        Description string
+    Build prompt with film grammar information.
+    Uses original repo's PromptLoader class.
     """
-    if not frames_base64:
-        return ""
+    prompt_loader = PromptLoader(
+        prompt_idx=prompt_variant or 0,
+        video_type=video_type,
+        label_type=label_type
+    )
+    
+    prompt = prompt_loader.apply(
+        char_text=char_text,
+        current_shots=current_shots or [],
+        threads=threads or [],
+        shot_scales=shot_scales or [2]
+    )
+    
+    return prompt
 
-    if prompt is None:
+
+def _build_prompt(frames_base64, prompt, film_grammar):
+    """Build prompt from film grammar if not provided."""
+    if prompt is None and film_grammar:
+        prompt = build_film_grammar_prompt(**film_grammar)
+    elif prompt is None:
         prompt = (
             "Please describe what happened in this video clip in the following steps:\n"
             "1. Identify main characters\n"
             "2. Describe the actions of characters\n"
             "3. Describe the interactions between characters\n"
             "4. Describe the environment\n"
-            "Note: Focus on movements and interactions. Do not hallucinate information."
+            "Note: Focus on movements and interactions. Do not hallucinate information.\n"
+            "Provide the result in Traditional Chinese."
         )
+    return prompt
 
-    # Build content with images
-    content = [{"type": "text", "text": prompt}]
 
+def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0):
+    """Call Gemini API using google-genai library."""
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        raise RuntimeError("google-genai not installed. Run: pip install google-genai")
+    
+    client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
+    
+    # Build content with images in correct format
+    content = [prompt]
     for frame_b64 in frames_base64:
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/jpeg;base64,{frame_b64}"
-            }
-        })
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": content
-            }
-        ],
-        "max_tokens": 512
-    }
-
-    # Retry logic
+        img_bytes = base64.b64decode(frame_b64)
+        content.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+    
+    logger.info(f"Gemini API: model={model}, frames={len(frames_base64)}, prompt_len={len(prompt)}")
+    
     for attempt in range(max_retries):
         try:
-            response = requests.post(
-                OPENROUTER_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=60
-            )
+            logger.info(f"Gemini API attempt {attempt+1}/{max_retries}...")
+            response = client.models.generate_content(model=model, contents=content)
+            result = response.text.strip() if response.text else ""
+            logger.info(f"Gemini API success: {len(result)} chars")
+            return result
+        except Exception as e:
+            logger.error(f"Gemini API attempt {attempt+1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            raise RuntimeError(f"Gemini API failed: {e}")
+
+
+def _call_openrouter(frames_base64, api_key, prompt, model="qwen/qwen3.7-plus", max_retries=3, retry_delay=1.0):
+    """Call OpenRouter API."""
+    content = [{"type": "text", "text": prompt}]
+    for frame_b64 in frames_base64:
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"}})
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 512
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
-
+            return response.json()["choices"][0]["message"]["content"]
         except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:
                 time.sleep(retry_delay * (attempt + 1))
                 continue
-            raise RuntimeError(f"OpenRouter API failed after {max_retries} attempts: {e}")
+            raise RuntimeError(f"OpenRouter API failed: {e}")
+
+
+def _call_openai(frames_base64, api_key, prompt, model="gpt-latest", max_retries=3, retry_delay=1.0, base_url=None):
+    """Call OpenAI-compatible API."""
+    content = [{"type": "text", "text": prompt}]
+    for frame_b64 in frames_base64:
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}", "detail": "low"}})
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 512
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    
+    url = f"{base_url}/chat/completions" if base_url else OPENAI_API_URL
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            raise RuntimeError(f"OpenAI API failed: {e}")
+
+
+def describe_frames(
+    frames_base64: List[str],
+    api_key: str,
+    backend: str = "gemini",
+    model: str = None,
+    prompt: str = None,
+    film_grammar: Dict = None,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+    openai_url: str = None,
+    openai_model: str = None
+) -> str:
+    """
+    Describe video frames using specified backend.
+    
+    Args:
+        frames_base64: List of base64-encoded JPEG images
+        api_key: API key for the selected backend
+        backend: "gemini-3.6-flash", "gemini-3.1-flash-lite", or "openai-compatible"
+        model: Model identifier (uses backend default if None)
+        prompt: Custom prompt (overrides film_grammar)
+        film_grammar: Dict with film grammar parameters
+        max_retries: Number of retry attempts
+        retry_delay: Delay between retries
+        openai_url: Custom API base URL for OpenAI-compatible
+        openai_model: Custom model name for OpenAI-compatible
+        
+    Returns:
+        Description string
+    """
+    if not frames_base64:
+        return ""
+    
+    prompt = _build_prompt(frames_base64, prompt, film_grammar)
+    
+    if backend.startswith("gemini"):
+        model = backend  # Use the full model name from dropdown
+        return _call_gemini(frames_base64, api_key, prompt, model, max_retries, retry_delay)
+    elif backend == "openai-compatible":
+        model = openai_model or "gpt-4o"
+        return _call_openai(frames_base64, api_key, prompt, model, max_retries, retry_delay, base_url=openai_url)
+    else:
+        raise ValueError(f"Unknown backend: {backend}")

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shot-by-Shot Video Processor</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; margin-bottom: 30px; font-size: 24px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: 500; color: #555; }
+        select, input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .checkbox { display: flex; align-items: center; gap: 8px; }
+        .checkbox input { width: auto; }
+        button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .file-select { display: flex; gap: 10px; align-items: center; }
+        .file-select input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background: #f9f9f9; }
+        .file-select button { width: auto; padding: 10px 20px; }
+        .hidden { display: none; }
+        .progress { margin-top: 20px; padding: 15px; background: #f0f7ff; border-radius: 8px; }
+        .progress h3 { margin-bottom: 10px; color: #333; }
+        .progress p { color: #666; margin: 5px 0; }
+        .result { margin-top: 20px; padding: 15px; background: #f0fff0; border-radius: 8px; }
+        .result h3 { margin-bottom: 10px; color: #28a745; }
+        .error { margin-top: 20px; padding: 15px; background: #fff0f0; border-radius: 8px; }
+        .error h3 { margin-bottom: 10px; color: #dc3545; }
+        .download-btn { display: inline-block; padding: 10px 20px; background: #28a745; color: white; text-decoration: none; border-radius: 5px; margin: 5px; cursor: pointer; }
+        .download-btn:hover { background: #218838; }
+        .character-item { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 15px; padding: 10px; background: white; border-radius: 6px; border: 1px solid #eee; }
+        .character-item img { width: 80px; height: 80px; border-radius: 8px; object-fit: cover; }
+        .color-dot { width: 20px; height: 20px; border-radius: 50%; display: inline-block; }
+        .progress-bar { width: 100%; height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #007bff, #00bfff); width: 0%; transition: width 0.3s ease; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Shot-by-Shot Video Processor</h1>
+        
+        <form id="uploadForm">
+            <!-- Video file -->
+            <div class="form-group">
+                <label>Video File:</label>
+                <div class="file-select">
+                    <input type="text" id="videoPath" readonly placeholder="No file selected">
+                    <button type="button" id="selectFileBtn">Select File</button>
+                </div>
+            </div>
+            
+            <!-- LLM -->
+            <div class="form-group">
+                <label for="backend">LLM:</label>
+                <select id="backend" name="backend">
+                    <option value="gemini-3.6-flash" selected>Gemini 3.6 Flash</option>
+                    <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                    <option value="openai-compatible">OpenAI Compatible</option>
+                </select>
+            </div>
+            
+            <!-- Gemini API Key -->
+            <div class="form-group" id="geminiKeyGroup">
+                <label for="apiKey">Gemini API Key:</label>
+                <input type="password" id="apiKey" name="apiKey">
+            </div>
+            
+            <!-- OpenAI Compatible Settings (hidden by default) -->
+            <div class="form-group hidden" id="openaiCompatibleGroup">
+                <label for="openaiUrl">API Base URL:</label>
+                <input type="text" id="openaiUrl" name="openaiUrl" value="https://api.openai.com/v1">
+                <label for="openaiModel" style="margin-top: 8px;">Model Name:</label>
+                <input type="text" id="openaiModel" name="openaiModel" value="gpt-4o">
+                <label for="openaiApiKey" style="margin-top: 8px;">API Key:</label>
+                <input type="password" id="openaiApiKey" name="openaiApiKey">
+            </div>
+            
+            <!-- Checkboxes -->
+            <div class="form-group checkbox">
+                <input type="checkbox" id="useWhisper" name="useWhisper" checked>
+                <label for="useWhisper">Enable dialogue gap detection</label>
+            </div>
+            <div class="form-group checkbox">
+                <input type="checkbox" id="useCharacterBank" name="useCharacterBank">
+                <label for="useCharacterBank">Enable face detection & character clustering</label>
+            </div>
+            <div class="form-group checkbox">
+                <input type="checkbox" id="useContextExtender" name="useContextExtender">
+                <label for="useContextExtender">Extend AD intervals with past/future shot context</label>
+            </div>
+            
+            <!-- Video type -->
+            <div class="form-group">
+                <label for="videoType">Video Type:</label>
+                <select id="videoType" name="videoType">
+                    <option value="movie">Movie</option>
+                    <option value="tv_series">TV Series</option>
+                    <option value="stage_performance">Stage Performance</option>
+                </select>
+            </div>
+            
+            <button type="submit" id="startBtn">Start</button>
+        </form>
+        
+        <!-- Progress -->
+        <div id="progress" class="progress hidden">
+            <h3>Processing...</h3>
+            <div style="width: 100%; height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden; margin: 10px 0;">
+                <div id="progressFill" style="height: 100%; background: linear-gradient(90deg, #007bff, #00bfff); width: 0%; transition: width 0.3s ease;"></div>
+            </div>
+            <p id="progressText">Initializing...</p>
+            <p id="progressDetail" style="color: #888; font-size: 12px;"></p>
+        </div>
+        
+        <!-- Character Editing -->
+        <div id="characterEditing" class="hidden">
+            <h3>Edit Character Names</h3>
+            <p style="color: #666; margin-bottom: 10px;">Detected characters are shown below. Enter names for each character.</p>
+            <div id="characterList"></div>
+            <button type="button" id="continueBtn">Continue to Processing</button>
+        </div>
+        
+        <!-- Results -->
+        <div id="result" class="result hidden">
+            <h3>Complete!</h3>
+            <div id="downloadLinks"></div>
+        </div>
+        
+        <!-- Error -->
+        <div id="error" class="error hidden">
+            <h3>Error</h3>
+            <p id="errorText"></p>
+        </div>
+    </div>
+
+    <script>
+        let currentVideoPath = null;
+        let currentTaskId = null;
+        
+        const colors = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff'];
+        
+        // Select file button - use pywebview file dialog
+        document.getElementById('selectFileBtn').addEventListener('click', async () => {
+            try {
+                const path = await window.pywebview.api.open_file_dialog();
+                if (path) {
+                    currentVideoPath = path;
+                    document.getElementById('videoPath').value = path.split('\\').pop() || path.split('/').pop();
+                }
+            } catch (err) {
+                console.error('File dialog error:', err);
+            }
+        });
+        
+        // Toggle OpenAI Compatible fields
+        document.getElementById('backend').addEventListener('change', function() {
+            const isOpenAI = this.value === 'openai-compatible';
+            document.getElementById('openaiCompatibleGroup').classList.toggle('hidden', !isOpenAI);
+            document.getElementById('geminiKeyGroup').classList.toggle('hidden', isOpenAI);
+        });
+        
+        // Form submission
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!currentVideoPath) {
+                alert('Please select a video file');
+                return;
+            }
+            
+            const backend = document.getElementById('backend').value;
+            const options = {
+                backend: backend,
+                api_key: backend === 'openai-compatible' ? document.getElementById('openaiApiKey').value : document.getElementById('apiKey').value,
+                openai_url: document.getElementById('openaiUrl').value,
+                openai_model: document.getElementById('openaiModel').value,
+                use_whisper: document.getElementById('useWhisper').checked,
+                use_character_bank: document.getElementById('useCharacterBank').checked,
+                use_context_extender: document.getElementById('useContextExtender').checked,
+                video_type: document.getElementById('videoType').value,
+            };
+            
+            // Show progress
+            document.getElementById('progress').classList.remove('hidden');
+            document.getElementById('result').classList.add('hidden');
+            document.getElementById('error').classList.add('hidden');
+            
+            try {
+                const result = await window.pywebview.api.process_video(currentVideoPath, options);
+                currentTaskId = result.task_id;
+                
+                // Poll for progress
+                pollProgress();
+            } catch (err) {
+                document.getElementById('progress').classList.add('hidden');
+                document.getElementById('error').classList.remove('hidden');
+                document.getElementById('errorText').textContent = err.message;
+            }
+        });
+        
+        // Poll progress
+        function pollProgress() {
+            const interval = setInterval(async () => {
+                const status = await window.pywebview.api.get_progress(currentTaskId);
+                
+                if (status.status === 'completed') {
+                    clearInterval(interval);
+                    document.getElementById('progress').classList.add('hidden');
+                    document.getElementById('result').classList.remove('hidden');
+                    
+                    const links = document.getElementById('downloadLinks');
+                    links.innerHTML = '';
+                    
+                    if (status.output_path) {
+                        links.innerHTML += `<a class="download-btn" href="#">Download Main CSV</a>`;
+                    }
+                    if (status.stage1_path) {
+                        links.innerHTML += `<a class="download-btn" href="#">Download Stage 1</a>`;
+                    }
+                    if (status.stage2_path) {
+                        links.innerHTML += `<a class="download-btn" href="#">Download Stage 2</a>`;
+                    }
+                } else if (status.status === 'failed') {
+                    clearInterval(interval);
+                    document.getElementById('progress').classList.add('hidden');
+                    document.getElementById('error').classList.remove('hidden');
+                    document.getElementById('errorText').textContent = status.error;
+                } else {
+                    document.getElementById('progressText').textContent = 
+                        `${status.step} (${Math.round(status.progress || 0)}%)`;
+                    document.getElementById('progressDetail').textContent = status.detail || '';
+                    document.getElementById('progressFill').style.width = `${status.progress || 0}%`;
+                }
+            }, 500);
+        }
+    </script>
+</body>
+</html>

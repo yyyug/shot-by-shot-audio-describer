@@ -1,82 +1,95 @@
+"""
+Transcription module using SenseVoice (FunASR)
+"""
 import os
-import subprocess
-import tempfile
-import json
+import sys
+import logging
 
+logger = logging.getLogger(__name__)
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 def transcribe_video(
     video_path: str,
-    whisper_cpp_path: str = "whisper-cpp",
+    whisper_cpp_path: str = None,
     model_path: str = None,
-    language: str = None,
-    compute_type: str = "int8"
+    language: str = "auto",
+    compute_type: str = "int8",
+    use_itn: bool = True,
+    callback=None
 ) -> list:
     """
-    Transcribe video audio using whisper.cpp.
-
+    Transcribe video audio using SenseVoice (FunASR).
+    
     Args:
         video_path: Path to the video file
-        whisper_cpp_path: Path to whisper-cpp binary
-        model_path: Path to whisper model file (e.g., models/ggml-medium.bin)
-        language: Language code (e.g., 'en', 'zh') or None for auto-detect
-        compute_type: Compute type (default: 'int8')
-
+        callback: Optional callback function(progress_float, message_str)
+        
     Returns:
         List of dicts with keys: text, start_time, end_time
     """
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
-    # Create temporary directory for output
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_prefix = os.path.join(tmpdir, "output")
+    if callback:
+        callback(0.0, "Loading SenseVoice model...")
+    
+    if model_path is None:
+        model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'SenseVoice', 'model.pt')
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"SenseVoice model not found at: {model_path}")
 
-        # Build command
-        cmd = [
-            whisper_cpp_path,
-            "-f", video_path,
-            "-o", tmpdir,
-            "--output-format", "json",
-            "--compute-type", compute_type
-        ]
+    try:
+        from funasr import AutoModel
+        from funasr.utils.postprocess_utils import rich_transcription_postprocess
+    except ImportError:
+        raise RuntimeError("funasr not installed. Please run: uv pip install funasr --system")
 
-        if model_path:
-            cmd.extend(["-m", model_path])
+    logger.info(f"Loading SenseVoice model from: {model_path}")
+    model = AutoModel(
+        model=model_path,
+        trust_remote_code=True,
+        vad_model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+        vad_kwargs={"max_single_segment_time": 30000},
+    )
+    
+    if callback:
+        callback(0.3, "Model loaded, transcribing...")
 
-        if language:
-            cmd.extend(["-l", language])
+    logger.info(f"Transcribing: {video_path}")
+    result = model.generate(
+        input=video_path,
+        cache={},
+        language=language,
+        use_itn=use_itn,
+        batch_size_s=60,
+        merge_vad=True,
+        merge_length_s=15,
+    )
+    
+    if callback:
+        callback(0.9, "Processing results...")
 
-        # Run whisper.cpp
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-        except FileNotFoundError:
-            raise RuntimeError(
-                f"whisper-cpp not found at: {whisper_cpp_path}. "
-                "Please install whisper.cpp or provide the correct path."
-            )
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"whisper.cpp failed: {e.stderr}")
-
-        # Parse JSON output
-        json_path = output_prefix + ".json"
-        if not os.path.exists(json_path):
-            raise RuntimeError(f"Output file not found: {json_path}")
-
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        # Convert to standard format
-        segments = []
-        for seg in data.get("segments", []):
-            segments.append({
-                "text": seg["text"].strip(),
-                "start_time": seg["start"],
-                "end_time": seg["end"]
-            })
-
-        return segments
+    payload = result[0]
+    text = rich_transcription_postprocess(payload["text"])
+    
+    segments = []
+    raw_segments = payload.get("timestamp") or []
+    
+    for entry in raw_segments:
+        if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+            start = float(entry[0]) / 1000
+            end = float(entry[1]) / 1000
+            seg_text = str(entry[2]).strip()
+            if seg_text:
+                segments.append({
+                    "text": seg_text,
+                    "start_time": start,
+                    "end_time": end
+                })
+    
+    if callback:
+        callback(1.0, f"Transcribed {len(segments)} segments")
+    
+    return segments

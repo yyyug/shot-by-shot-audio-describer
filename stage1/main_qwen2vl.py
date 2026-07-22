@@ -32,6 +32,9 @@ def main(args):
         D = MADEval_Dataset
         video_type = "movie"
         args.num_workers = 8
+    elif args.dataset == "stageperformance":
+        D = CMDAD_Dataset  # Use CMDAD_Dataset as base
+        video_type = "stage performance"
     else:
         print("Check dataset name")
         sys.exit()

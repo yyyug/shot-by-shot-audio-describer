@@ -1,122 +1,246 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shot-by-Shot Video Processor</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <title>Shot-by-Shot — Video Audio Description Generator</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="container">
-        <h1>Shot-by-Shot Video Processor</h1>
-        
-        <form id="uploadForm">
-            <div class="form-group">
-                <label for="video">Video File (MP4):</label>
-                <input type="file" id="video" name="video" accept="video/mp4" required>
+        <header>
+            <h1>Shot-by-Shot</h1>
+            <p class="subtitle">Oxford VGG Film-Grammar-Aware Audio Description Generator</p>
+        </header>
+
+        <div class="upload-section">
+            <div class="file-input-wrapper">
+                <input type="file" id="videoFile" accept="video/*" required>
+                <label for="videoFile" class="file-label">
+                    <span class="file-icon">🎬</span>
+                    <span class="file-text">Select MP4 Video</span>
+                </label>
+                <span class="file-name" id="fileName">No file selected</span>
             </div>
-            
-            <div class="form-group">
-                <label for="whisper_path">Whisper.cpp Path:</label>
-                <input type="text" id="whisper_path" name="whisper_path" value="whisper-cpp">
+
+            <div class="options">
+                <div class="option-row">
+                    <label for="backend">LLM Backend:</label>
+                    <select id="backend">
+                        <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash</option>
+                        <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                        <option value="openrouter">OpenRouter (Qwen 2.5 VL)</option>
+                    </select>
+                </div>
+
+                <div class="option-row" id="apiKeyRow">
+                    <label for="apiKey">API Key:</label>
+                    <input type="password" id="apiKey" placeholder="Enter your API key">
+                </div>
+
+                <div class="option-row">
+                    <label for="videoType">Video Type:</label>
+                    <select id="videoType">
+                        <option value="movie">Movie / TV Series</option>
+                        <option value="documentary">Documentary</option>
+                        <option value="youtube">YouTube Video</option>
+                    </select>
+                </div>
+
+                <div class="option-row">
+                    <label>
+                        <input type="checkbox" id="useCharacterBank">
+                        Enable Character Recognition
+                    </label>
+                </div>
+
+                <div class="option-row">
+                    <label>
+                        <input type="checkbox" id="skipStage2">
+                        Skip Stage 2 (Stage 1 only)
+                    </label>
+                </div>
             </div>
-            
-            <div class="form-group">
-                <label for="model_path">Whisper Model Path (optional):</label>
-                <input type="text" id="model_path" name="model_path" placeholder="e.g., models/ggml-medium.bin">
-            </div>
-            
-            <div class="form-group">
-                <label for="language">Language (optional):</label>
-                <input type="text" id="language" name="language" placeholder="e.g., en, zh">
-            </div>
-            
-            <div class="form-group">
-                <label for="openrouter_key">OpenRouter API Key (optional for VLM):</label>
-                <input type="password" id="openrouter_key" name="openrouter_key">
-            </div>
-            
-            <div class="form-group">
-                <label for="format">Output Format:</label>
-                <select id="format" name="format">
-                    <option value="basic">Basic (shot_id, start, end, subtitle)</option>
-                    <option value="full">Full (with video description)</option>
-                    <option value="original">Original project format</option>
-                </select>
-            </div>
-            
-            <button type="submit">Process Video</button>
-        </form>
-        
-        <div id="progress" class="hidden">
-            <h2>Processing...</h2>
-            <div class="progress-bar">
-                <div class="progress-fill" id="progressFill"></div>
-            </div>
-            <p id="progressText">Initializing...</p>
+
+            <button id="processBtn" class="process-btn" disabled>
+                <span class="btn-text">Start Processing</span>
+                <span class="btn-loader hidden"></span>
+            </button>
         </div>
-        
-        <div id="result" class="hidden">
-            <h2>Complete!</h2>
-            <a id="downloadLink" href="#" class="download-btn">Download CSV</a>
+
+        <div id="progressSection" class="progress-section hidden">
+            <div class="progress-header">
+                <h2>Processing...</h2>
+                <span id="progressPercent">0%</span>
+            </div>
+            <div class="progress-bar-wrapper">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-details">
+                <span id="progressStep">Initializing...</span>
+                <span id="shotsCount"></span>
+            </div>
         </div>
-        
-        <div id="error" class="hidden">
+
+        <div id="downloadSection" class="download-section hidden">
+            <h2>Processing Complete!</h2>
+            <div class="download-buttons">
+                <a id="downloadBtn" class="download-btn" download>
+                    <span>📥 Download Full CSV</span>
+                </a>
+                <a id="downloadStage1Btn" class="download-btn hidden" download>
+                    <span>📥 Download Stage 1 (Detailed)</span>
+                </a>
+                <a id="downloadStage2Btn" class="download-btn hidden" download>
+                    <span>📥 Download Stage 2 (Summarized AD)</span>
+                </a>
+            </div>
+            <button id="resetBtn" class="reset-btn">Process Another Video</button>
+        </div>
+
+        <div id="errorSection" class="error-section hidden">
             <h2>Error</h2>
-            <p id="errorText"></p>
+            <p id="errorMessage"></p>
+            <button id="retryBtn" class="reset-btn">Try Again</button>
         </div>
     </div>
-    
+
     <script>
-        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const formData = new FormData(e.target);
-            
-            document.getElementById('progress').classList.remove('hidden');
-            document.getElementById('result').classList.add('hidden');
-            document.getElementById('error').classList.add('hidden');
-            
-            try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    const taskId = data.task_id;
-                    const eventSource = new EventSource(`/progress/${taskId}`);
-                    
-                    eventSource.onmessage = (event) => {
-                        const status = JSON.parse(event.data);
-                        
-                        if (status.status === 'completed') {
-                            eventSource.close();
-                            document.getElementById('progress').classList.add('hidden');
-                            document.getElementById('result').classList.remove('hidden');
-                            document.getElementById('downloadLink').href = `/download/${taskId}`;
-                        } else if (status.status === 'failed') {
-                            eventSource.close();
-                            document.getElementById('progress').classList.add('hidden');
-                            document.getElementById('error').classList.remove('hidden');
-                            document.getElementById('errorText').textContent = status.error;
-                        } else {
-                            document.getElementById('progressFill').style.width = `${status.progress}%`;
-                            document.getElementById('progressText').textContent = 
-                                `${status.step}: ${status.progress}%`;
-                        }
-                    };
-                } else {
-                    throw new Error(data.error);
-                }
-            } catch (error) {
-                document.getElementById('progress').classList.add('hidden');
-                document.getElementById('error').classList.remove('hidden');
-                document.getElementById('errorText').textContent = error.message;
+        const videoFile = document.getElementById('videoFile');
+        const fileName = document.getElementById('fileName');
+        const backend = document.getElementById('backend');
+        const apiKey = document.getElementById('apiKey');
+        const videoType = document.getElementById('videoType');
+        const useCharacterBank = document.getElementById('useCharacterBank');
+        const skipStage2 = document.getElementById('skipStage2');
+        const processBtn = document.getElementById('processBtn');
+        const progressSection = document.getElementById('progressSection');
+        const progressPercent = document.getElementById('progressPercent');
+        const progressBar = document.getElementById('progressBar');
+        const progressStep = document.getElementById('progressStep');
+        const shotsCount = document.getElementById('shotsCount');
+        const downloadSection = document.getElementById('downloadSection');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const downloadStage1Btn = document.getElementById('downloadStage1Btn');
+        const downloadStage2Btn = document.getElementById('downloadStage2Btn');
+        const resetBtn = document.getElementById('resetBtn');
+        const errorSection = document.getElementById('errorSection');
+        const errorMessage = document.getElementById('errorMessage');
+        const retryBtn = document.getElementById('retryBtn');
+
+        videoFile.addEventListener('change', () => {
+            if (videoFile.files.length > 0) {
+                fileName.textContent = videoFile.files[0].name;
+                processBtn.disabled = false;
+            } else {
+                fileName.textContent = 'No file selected';
+                processBtn.disabled = true;
             }
         });
+
+        processBtn.addEventListener('click', startProcessing);
+        resetBtn.addEventListener('click', resetUI);
+        retryBtn.addEventListener('click', resetUI);
+
+        function resetUI() {
+            progressSection.classList.add('hidden');
+            downloadSection.classList.add('hidden');
+            errorSection.classList.add('hidden');
+            processBtn.disabled = false;
+            processBtn.querySelector('.btn-text').textContent = 'Start Processing';
+            processBtn.querySelector('.btn-loader').classList.add('hidden');
+        }
+
+        async function startProcessing() {
+            const file = videoFile.files[0];
+            if (!file) return;
+
+            processBtn.disabled = true;
+            processBtn.querySelector('.btn-text').textContent = 'Processing...';
+            processBtn.querySelector('.btn-loader').classList.remove('hidden');
+            progressSection.classList.remove('hidden');
+            downloadSection.classList.add('hidden');
+            errorSection.classList.add('hidden');
+
+            const formData = new FormData();
+            formData.append('video', file);
+            formData.append('backend', backend.value);
+            formData.append('api_key', apiKey.value);
+            formData.append('video_type', videoType.value);
+            formData.append('use_character_bank', useCharacterBank.checked);
+            formData.append('skip_stage2', skipStage2.checked);
+
+            try {
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+
+                pollProgress(data.task_id);
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        function pollProgress(taskId) {
+            const eventSource = new EventSource(`/progress/${taskId}`);
+
+            eventSource.onmessage = (event) => {
+                const status = JSON.parse(event.data);
+                const pct = status.progress || 0;
+
+                progressBar.style.width = `${pct}%`;
+                progressPercent.textContent = `${pct}%`;
+                progressStep.textContent = (status.step || 'Processing...') + 
+                    (status.detail ? ` — ${status.detail}` : '');
+
+                if (status.shots_count) {
+                    shotsCount.textContent = `${status.shots_count} shots detected`;
+                }
+
+                if (status.status === 'completed') {
+                    eventSource.close();
+                    showDownload(taskId, status);
+                } else if (status.status === 'failed') {
+                    eventSource.close();
+                    showError(status.error || 'Processing failed');
+                }
+            };
+
+            eventSource.onerror = () => {
+                eventSource.close();
+                showError('Connection lost');
+            };
+        }
+
+        function showDownload(taskId, status) {
+            progressSection.classList.add('hidden');
+            downloadSection.classList.remove('hidden');
+
+            downloadBtn.href = `/download/${taskId}`;
+            downloadBtn.classList.remove('hidden');
+
+            if (status.stage1_path) {
+                downloadStage1Btn.href = `/download/${taskId}?stage=1`;
+                downloadStage1Btn.classList.remove('hidden');
+            }
+            if (status.stage2_path) {
+                downloadStage2Btn.href = `/download/${taskId}?stage=2`;
+                downloadStage2Btn.classList.remove('hidden');
+            }
+        }
+
+        function showError(msg) {
+            progressSection.classList.add('hidden');
+            errorSection.classList.remove('hidden');
+            errorMessage.textContent = msg;
+            processBtn.disabled = false;
+            processBtn.querySelector('.btn-text').textContent = 'Start Processing';
+            processBtn.querySelector('.btn-loader').classList.add('hidden');
+        }
     </script>
 </body>
 </html>
