@@ -1,5 +1,6 @@
 import pytest
 import os
+import json
 from processing.whisper_transcriber import transcribe_video
 
 
@@ -15,7 +16,7 @@ def test_transcribe_video_raises_on_missing_file():
 
 
 def test_transcribe_video_returns_list(tmp_path):
-    """Verify return type is list for SenseVoice transcription."""
+    """Verify return type is list with whisper.cpp output."""
     from unittest.mock import patch, MagicMock
     
     # Create a fake video file
@@ -26,29 +27,25 @@ def test_transcribe_video_returns_list(tmp_path):
     model_file = tmp_path / "model.pt"
     model_file.touch()
     
-    # Mock the entire SenseVoice flow
-    mock_result = [{
-        "text": "Hello world Test sentence",
-        "timestamp": [
-            [0, 2500, "Hello world"],
-            [2500, 5000, "Test sentence"]
+    # Create fake whisper output
+    mock_output = {
+        "segments": [
+            {"text": "Hello world", "start": 0.0, "end": 2.5},
+            {"text": "Test sentence", "start": 2.5, "end": 5.0}
         ]
-    }]
+    }
     
-    mock_model = MagicMock()
-    mock_model.generate.return_value = mock_result
+    def mock_run(cmd, **kwargs):
+        # Create output file in temp directory
+        o_idx = cmd.index("-o")
+        output_dir = cmd[o_idx + 1]
+        output_file = os.path.join(output_dir, "output.json")
+        with open(output_file, 'w') as f:
+            json.dump(mock_output, f)
+        return MagicMock(returncode=0, stdout="", stderr="")
     
-    # Mock the funasr module
-    mock_funasr = MagicMock()
-    mock_funasr.AutoModel.return_value = mock_model
-    
-    mock_postprocess = MagicMock(side_effect=lambda x: x)
-    
-    with patch.dict('sys.modules', {
-        'funasr': mock_funasr,
-        'funasr.utils.postprocess_utils': MagicMock(rich_transcription_postprocess=mock_postprocess)
-    }):
-        result = transcribe_video(str(video_file), model_path=str(model_file))
+    with patch('processing.whisper_transcriber.subprocess.run', side_effect=mock_run):
+        result = transcribe_video(str(video_file), whisper_cpp_path="fake-whisper", model_path=str(model_file))
     
     assert isinstance(result, list)
     assert len(result) == 2

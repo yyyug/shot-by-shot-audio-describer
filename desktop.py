@@ -400,6 +400,7 @@ def main():
         width=1200,
         height=800,
         min_size=(800, 600),
+        on_top=True,
     )
     
     bridge.attach_window(window)
