@@ -5,24 +5,155 @@ import os
 import sys
 import json
 import uuid
+import time
 import threading
 import logging
+import subprocess
 import numpy as np
 from datetime import datetime
 
 # Configure logging
+FROZEN = bool(getattr(sys, "frozen", False))
+_MEIPASS = getattr(sys, "_MEIPASS", None)
+if FROZEN:
+    BASE_DIR = _MEIPASS or os.path.dirname(sys.executable)
+    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(sys.executable)), "ShotByShot")
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(BASE_DIR, "outputs")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Log files older than 30 days are no longer needed; delete them on startup so
+# the log directory does not grow without bound.
+def _cleanup_old_logs(log_dir, max_age_days=30):
+    try:
+        cutoff = datetime.now().timestamp() - max_age_days * 86400
+        for name in os.listdir(log_dir):
+            if not name.lower().endswith(".log"):
+                continue
+            path = os.path.join(log_dir, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+_cleanup_old_logs(DATA_DIR)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('shot_by_shot.log'),
+        logging.FileHandler(os.path.join(DATA_DIR, 'shot_by_shot.log'), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
+
+class _NoiseFilter(logging.Filter):
+    """Drop pywebview's close-time attribute-recursion spam that would
+    otherwise flood the log and bury real diagnostics."""
+    def filter(self, record):
+        msg = record.getMessage()
+        return not msg.startswith("Error while processing window.native")
+
+
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_NoiseFilter())
+
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _excepthook
+
+_WEBVIEW2_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+
+
+def _webview2_runtime_installed():
+    """True if the Edge WebView2 Runtime is registered (machine or per-user)."""
+    if sys.platform != "win32":
+        return True
+    import winreg
+    keys = [
+        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\" + _WEBVIEW2_GUID),
+        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\" + _WEBVIEW2_GUID),
+        (winreg.HKEY_CURRENT_USER, "Software\\Microsoft\\EdgeUpdate\\Clients\\" + _WEBVIEW2_GUID),
+    ]
+    for hive, path in keys:
+        try:
+            with winreg.OpenKey(hive, path):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _warn_no_webview2():
+    msg = (
+        "Microsoft Edge WebView2 Runtime 未安裝，無法啟動介面。\n\n"
+        "The Microsoft Edge WebView2 Runtime is required but not installed.\n\n"
+        "請安裝後重新執行 / Please install it, then run the app again:\n"
+        "https://developer.microsoft.com/microsoft-edge/webview2/"
+    )
+    logger.critical("WebView2 Runtime not found; aborting startup")
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, msg, "Shot-by-Shot", 0x10)
+    except Exception:
+        print(msg)
+
+
+_WINDOW_TITLE = "Shot-by-Shot Audio Describer"
+
+
+def _start_window_watchdog(timeout=60):
+    """Poll for the main window; if it never appears, dump WebView2
+    subprocess state to the log so a silent native failure can be
+    diagnosed remotely (0 processes = broken runtime; >0 = GPU/render)."""
+    stop = threading.Event()
+
+    def watch():
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if stop.wait(2):
+                return
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.FindWindowW(None, _WINDOW_TITLE)
+                if hwnd:
+                    logger.info(f"Window handle found (hwnd=0x{hwnd:X})")
+                    return
+            except Exception:
+                pass
+        logger.warning(f"No window after {timeout}s - dumping WebView2 process state")
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq msedgewebview2.exe", "/FO", "CSV"],
+                capture_output=True, text=True, timeout=15,
+            )
+            count = out.stdout.count("msedgewebview2")
+            logger.warning(f"msedgewebview2.exe running: {count} process(es)")
+            logger.warning(f"tasklist output:\n{out.stdout.strip()}")
+        except Exception as e:
+            logger.error(f"tasklist failed: {e}")
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    return stop
+
 # Add current directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if FROZEN:
+    sys.path.insert(0, _MEIPASS or os.path.dirname(sys.executable))
+else:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Try to import webview, provide fallback message if not available
 try:
@@ -33,12 +164,13 @@ except ImportError:
     sys.exit(1)
 
 from processing.shot_detector import detect_shots
-from processing.whisper_transcriber import transcribe_video
+from processing.sensevoice_transcriber import transcribe_video
+from processing.dialogue_gap_detector import detect_ad_intervals
 from processing.vlm_describer import describe_frames
-from processing.llm_summarizer import batch_summarize, estimate_word_limit
-from processing.csv_merger import merge_shots_subtitles, merge_with_descriptions
+from processing.llm_summarizer import batch_summarize, estimate_word_limit, test_connection
 from processing.film_grammar import get_effective_shot_scale, select_prompt_variant
 from processing.character_recognizer import detect_faces, extract_face_embeddings, cluster_faces
+from processing.vtt_writer import write_vtt
 
 
 class AppBridge:
@@ -47,6 +179,7 @@ class AppBridge:
     def __init__(self):
         self.window = None
         self.processing_status = {}
+        self._active_task_id = None
     
     def attach_window(self, window):
         self.window = window
@@ -63,30 +196,59 @@ class AppBridge:
     
     # File dialog
     def open_file_dialog(self):
-        """Open file dialog to select video file."""
+        """Open file dialog to select video file. Retries once on transient
+        COM/WebView2 failures instead of letting the exception escape."""
         import webview
-        result = self.window.create_file_dialog(
-            webview.FileDialog.OPEN,
-            allow_multiple=False,
-            file_types=('Video Files (*.mp4;*.mkv;*.avi;*.mov)',)
-        )
-        if result and len(result) > 0:
-            return result[0]
+        file_types = ('Video Files (*.mp4;*.mkv;*.avi;*.mov)',)
+        for attempt in (1, 2):
+            try:
+                logger.info(f"File dialog: attempt {attempt}/2 begin")
+                result = self.window.create_file_dialog(
+                    webview.FileDialog.OPEN,
+                    allow_multiple=False,
+                    file_types=file_types
+                )
+                logger.info(f"File dialog returned: {result!r}")
+                if result and len(result) > 0:
+                    return result[0]
+                return None
+            except Exception as e:
+                logger.error(f"File dialog failed (attempt {attempt}/2): {e}")
+                time.sleep(0.5)
         return None
     
+    # API key test
+    def test_api(self, backend, api_key, openai_url=None, openai_model=None):
+        """Send a tiny prompt through the selected backend; returns
+        {"ok": bool, "message": str} for the UI."""
+        logger.info(f"API key test requested: backend={backend}")
+        ok, message = test_connection(api_key, backend, openai_url, openai_model)
+        logger.info(f"API key test result: ok={ok} - {message}")
+        return {"ok": ok, "message": message}
+
     # Processing functions
     def process_video(self, video_path, options):
-        """Start video processing in background thread."""
+        """Start video processing in background thread.
+
+        Only one task may run at a time: the free-tier Gemini quota is
+        per-account-per-day, and concurrent runs exhaust it in minutes. A
+        second submission is rejected outright."""
+        if self._active_task_id is not None:
+            logger.warning("Cannot start - another task is already processing")
+            return {"task_id": None, "status": "busy",
+                    "error": "A task is already processing. Wait for it to complete before starting another."}
+
         task_id = str(uuid.uuid4())
+        self._active_task_id = task_id
         self.processing_status[task_id] = {"status": "processing", "step": "initializing"}
-        
+
         thread = threading.Thread(
             target=self._process_video_task,
             args=(task_id, video_path, options),
             daemon=True
         )
         thread.start()
-        
+
         return {"task_id": task_id, "status": "started"}
     
     def _process_video_task(self, task_id, video_path, options):
@@ -118,15 +280,17 @@ class AppBridge:
             
             shots = detect_shots(video_path, callback=shot_progress)
             status["shots_count"] = len(shots)
+            logger.info(f"{len(shots)} shots detected")
             status["detail"] = f"Found {len(shots)} shots"
             status["progress"] = 20
             self.emit_progress(task_id, status)
             
-            # Step 2: Transcription
+            # Step 2: Transcription (SenseVoice)
             status["step"] = "transcription"
             status["detail"] = "Starting transcription..."
             self.emit_progress(task_id, status)
             
+            subtitles = []
             if options.get("use_whisper", True):
                 def trans_progress(progress, message):
                     status["detail"] = f"Transcription: {message}"
@@ -136,21 +300,42 @@ class AppBridge:
                 try:
                     subtitles = transcribe_video(video_path, language="auto", callback=trans_progress)
                     status["detail"] = f"Transcribed {len(subtitles)} segments"
-                except:
+                    logger.info(f"Transcribed {len(subtitles)} segments")
+                except Exception:
                     subtitles = []
-                    status["detail"] = "Transcription failed, using empty subtitles"
+                    status["detail"] = "Transcription failed, using shot-based mode"
+                    logger.warning("Transcription failed, using shot-based mode", exc_info=True)
             else:
-                subtitles = []
                 status["detail"] = "Skipped"
             status["progress"] = 30
             self.emit_progress(task_id, status)
             
-            # Step 3: Merge
+            # Step 3: Build AD units (dialogue gaps when transcribed, else shots)
             status["step"] = "merging"
-            status["detail"] = "Merging shots with subtitles..."
-            merged_df = merge_shots_subtitles(shots, subtitles)
+            status["detail"] = "Building AD units..."
+            units = []
+            if subtitles:
+                ad_intervals = detect_ad_intervals(subtitles, shots, video_duration=video_duration)
+                status["detail"] = f"Detected {len(ad_intervals)} dialogue-gap AD intervals"
+                for interval in ad_intervals:
+                    units.append({
+                        "unit_id": interval["ad_id"],
+                        "start": interval["start"],
+                        "end": interval["end"],
+                        "shot_ids": interval["shot_ids"],
+                    })
+            if not units:
+                logger.info("No dialogue-gap intervals; falling back to shot-based units")
+                for shot in shots:
+                    units.append({
+                        "unit_id": shot["shot_id"],
+                        "start": shot["start_time"],
+                        "end": shot["end_time"],
+                        "shot_ids": [shot["shot_id"]],
+                    })
             status["progress"] = 40
             self.emit_progress(task_id, status)
+            logger.info(f"Built {len(units)} AD units")
             
             # Step 4: Character detection (optional)
             if options.get("use_character_bank"):
@@ -168,38 +353,40 @@ class AppBridge:
             
             if api_key:
                 status["step"] = "describe"
-                status["detail"] = f"Starting VLM descriptions... ({len(shots)} shots to process)"
-                logger.info(f"Starting VLM descriptions: {len(shots)} shots, backend={backend}, context={use_context}")
+                status["detail"] = f"Starting VLM descriptions... ({len(units)} units to process)"
+                logger.info(f"Starting VLM descriptions: {len(units)} units, backend={backend}, context={use_context}")
                 self.emit_progress(task_id, status)
                 
                 descriptions_dict = {}
-                for i, shot in enumerate(shots):
+                for i, unit in enumerate(units):
                     try:
-                        logger.info(f"Processing shot {i+1}/{len(shots)}...")
+                        logger.info(f"Processing unit {i+1}/{len(units)}...")
                         
+                        frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
                         if use_context:
                             # Get context shots (2 before + current + 2 after)
-                            context_shots = self._get_context_shots(shots, i)
-                            status["detail"] = f"Describing shot {i+1}/{len(shots)} with {len(context_shots)} context shots"
-                            frames_b64 = self._extract_frames_with_context(video_path, shot, context_shots)
+                            context_shots = self._get_context_shots(shots, unit["shot_ids"])
+                            status["detail"] = f"Describing unit {i+1}/{len(units)} with {len(context_shots)} context shots"
+                            frames_b64 = self._extract_frames_with_context(video_path, frame_shot, context_shots)
                         else:
-                            frames_b64 = self._extract_frames(video_path, shot)
+                            frames_b64 = self._extract_frames(video_path, frame_shot)
                         
-                        duration = shot["end_time"] - shot["start_time"]
+                        duration = unit["end"] - unit["start"]
                         num_frames = len(frames_b64)
-                        status["detail"] = f"Describing shot {i+1}/{len(shots)} ({duration:.0f}s, {num_frames} frames)"
+                        status["detail"] = f"Describing unit {i+1}/{len(units)} ({duration:.0f}s, {num_frames} frames)"
                         
-                        logger.info(f"Calling Gemini API for shot {i+1} ({num_frames} frames)...")
+                        logger.info(f"Calling Gemini API for unit {i+1} ({num_frames} frames)...")
                         
                         # Build film grammar for prompt selection
                         film_grammar = {
                             "video_type": options.get("video_type", "movie"),
                             "label_type": "none",
                             "char_text": "",
-                            "current_shots": [i],
+                            "current_shots": [s - 1 for s in unit["shot_ids"]],
                             "threads": [[j for j in range(len(shots))]],
                             "shot_scales": [2] * len(shots),
-                            "prompt_variant": None
+                            "prompt_variant": 4,
+                            "custom_opening": (options.get("custom_opening") or "").strip() or None
                         }
                         
                         desc = describe_frames(
@@ -209,92 +396,140 @@ class AppBridge:
                             openai_url=options.get("openai_url"),
                             openai_model=options.get("openai_model")
                         )
-                        logger.info(f"Shot {i+1} completed: {len(desc)} chars")
-                        descriptions_dict[shot["shot_id"]] = desc
+                        logger.info(f"Unit {i+1} completed: {len(desc)} chars")
+                        descriptions_dict[unit["unit_id"]] = desc
                     except Exception as e:
-                        logger.error(f"Shot {i+1} failed: {e}")
-                        descriptions_dict[shot["shot_id"]] = ""
-                        status["detail"] = f"Shot {i+1} failed: {str(e)[:50]}"
+                        logger.error(f"Unit {i+1} failed: {e}", exc_info=True)
+                        descriptions_dict[unit["unit_id"]] = ""
+                        status["detail"] = f"Unit {i+1} failed: {str(e)[:50]}"
                     
                     # Rate limit protection: wait between API calls
-                    if i < len(shots) - 1:
+                    if i < len(units) - 1:
                         import time
                         time.sleep(3)  # Wait 3 seconds to stay under 15 RPM
                     
-                    status["progress"] = 50 + (i / len(shots)) * 20
+                    status["progress"] = 50 + (i / len(units)) * 20
                     self.emit_progress(task_id, status)
-                
-                descriptions = [{"shot_id": k, "description": v} for k, v in descriptions_dict.items()]
-                merged_df = merge_with_descriptions(merged_df, descriptions)
             else:
                 status["detail"] = "Skipped (no API key)"
+                logger.warning("No API key provided - VLM descriptions and Stage 2 will be SKIPPED (output CSVs will be empty)")
             
-            status["detail"] = f"Described {len(descriptions_dict)} shots"
+            status["detail"] = f"Described {len(descriptions_dict)} units"
             status["progress"] = 80
             self.emit_progress(task_id, status)
             
             # Step 6: Stage 2 summarization
-            if not options.get("skip_stage2") and api_key:
-                status["step"] = "summarize"
-                status["detail"] = "Summarizing audio descriptions..."
-                self.emit_progress(task_id, status)
-                
-                stage1_results = []
-                for shot in shots:
-                    stage1_results.append({
-                        "shot_id": shot["shot_id"],
-                        "start": shot["start_time"],
-                        "end": shot["end_time"],
-                        "description": descriptions_dict.get(shot["shot_id"], "")
-                    })
-                
-                stage2_results = batch_summarize(
-                    stage1_results, api_key, backend=backend,
-                    video_type=options.get("video_type", "movie")
-                )
-                
-                # Save Stage 1 and Stage 2 outputs
-                import pandas as pd
-                output_dir = os.path.join(os.path.dirname(__file__), "outputs")
-                os.makedirs(output_dir, exist_ok=True)
-                
+            ad_sentence_map = {}
+
+            # Stage-1 results are always persisted when there is anything to
+            # keep, so partial successes survive a quota abort.
+            stage1_results = []
+            for unit in units:
+                stage1_results.append({
+                    "shot_id": unit["unit_id"],
+                    "start": unit["start"],
+                    "end": unit["end"],
+                    "description": descriptions_dict.get(unit["unit_id"], "")
+                })
+            success_count = sum(1 for v in descriptions_dict.values() if str(v).strip())
+            import pandas as pd
+            output_dir = DATA_DIR
+            os.makedirs(output_dir, exist_ok=True)
+            if success_count > 0:
                 stage1_df = pd.DataFrame(stage1_results)
                 stage1_path = os.path.join(output_dir, f"{timestamp}_DetailsDescription.csv")
-                stage1_df.to_csv(stage1_path, index=False)
+                stage1_df.to_csv(stage1_path, index=False, encoding="utf-8-sig")
                 status["stage1_path"] = stage1_path
-                
-                stage2_df = pd.DataFrame(stage2_results)
-                stage2_path = os.path.join(output_dir, f"{timestamp}_AD.csv")
-                stage2_df.to_csv(stage2_path, index=False)
-                status["stage2_path"] = stage2_path
-            
-            status["progress"] = 100
-            status["status"] = "completed"
-            
-            # Save final output
-            output_dir = os.path.join(os.path.dirname(__file__), "outputs")
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f"{timestamp}-final.csv")
-            merged_df.to_csv(output_path, index=False)
-            status["output_path"] = output_path
-            
-            self.emit_progress(task_id, status)
-            
+                logger.info(f"Stage 1 written: non-empty descriptions {success_count}/{len(stage1_results)}")
+
+            if not options.get("skip_stage2") and api_key and descriptions_dict:
+                # Abort stage 2 when the majority of shots could not be
+                # described (almost always an exhausted free-tier quota). Keep
+                # the partial stage-1 CSV and say so clearly rather than
+                # silently emitting an empty final file.
+                if len(units) > 0 and success_count / len(units) < 0.5:
+                    status["status"] = "failed"
+                    status["partial"] = True
+                    status["error"] = (
+                        f"API quota limit reached: only {success_count}/{len(units)} shots could be "
+                        f"described (full audio descriptions need ~{2 * len(units)} API calls). "
+                        "Stage 2 (AD summarization) was skipped, so final.csv and _AD.csv were NOT "
+                        "generated. The partial shot descriptions are saved in _DetailsDescription.csv. "
+                        "Free-tier daily quota resets at midnight Pacific Time. Consider a paid tier or "
+                        "a higher-quota model (e.g. a 2.x Flash model) to process this video."
+                    )
+                    logger.warning(f"Aborting stage 2 - only {success_count}/{len(units)} shots succeeded (quota likely exhausted)")
+                    self.emit_progress(task_id, status)
+                else:
+                    status["step"] = "summarize"
+                    status["detail"] = "Summarizing audio descriptions..."
+                    logger.info("Stage 2 summarization begin")
+                    self.emit_progress(task_id, status)
+
+                    stage2_results = batch_summarize(
+                        stage1_results, api_key, backend=backend,
+                        video_type=options.get("video_type", "movie")
+                    )
+                    ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
+                    non_empty = sum(1 for v in ad_sentence_map.values() if str(v).strip())
+                    logger.info(f"Stage 2 produced {non_empty}/{len(ad_sentence_map)} non-empty AD sentences")
+
+                    stage2_df = pd.DataFrame(stage2_results)
+                    stage2_path = os.path.join(output_dir, f"{timestamp}_AD.csv")
+                    stage2_df.to_csv(stage2_path, index=False, encoding="utf-8-sig")
+                    status["stage2_path"] = stage2_path
+
+                    status["progress"] = 100
+                    status["status"] = "completed"
+
+                    output_df = pd.DataFrame([{
+                        "shot_id": unit["unit_id"],
+                        "start": unit["start"],
+                        "end": unit["end"],
+                        "ad_sentence": ad_sentence_map.get(unit["unit_id"], "")
+                    } for unit in units])
+                    output_path = os.path.join(output_dir, f"{timestamp}-final.csv")
+                    output_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+                    status["output_path"] = output_path
+
+                    vtt_path = os.path.join(output_dir, f"{timestamp}-final.vtt")
+                    write_vtt(vtt_path, output_df.to_dict("records"))
+
+                    logger.info(f"Completed - outputs {timestamp}_DetailsDescription.csv / {timestamp}_AD.csv / {timestamp}-final.csv / {timestamp}-final.vtt")
+
+                    self.emit_progress(task_id, status)
+            else:
+                # No API key or stage 2 explicitly skipped: only stage-1 CSV exists.
+                status["status"] = "completed"
+                status["progress"] = 100
+                logger.info(f"Completed (stage 2 not run) - outputs {timestamp}_DetailsDescription.csv")
+                self.emit_progress(task_id, status)
+
         except Exception as e:
             status["status"] = "failed"
             status["error"] = str(e)
+            logger.critical(
+                f"Processing FAILED at step={status.get('step')} progress={status.get('progress')}: {e}",
+                exc_info=True,
+            )
             self.emit_progress(task_id, status)
+        finally:
+            if self._active_task_id == task_id:
+                self._active_task_id = None
     
-    def _get_context_shots(self, shots, current_idx):
-        """Get context shots: 2 before + current + 2 after."""
+    def _get_context_shots(self, shots, current_shot_ids):
+        """Get context shots: 2 before + current shots + 2 after."""
+        if not current_shot_ids:
+            current_shot_ids = [shots[0]["shot_id"]]
+        idxs = [s["shot_id"] for s in shots]
+        first_idx = idxs.index(current_shot_ids[0])
+        last_idx = idxs.index(current_shot_ids[-1])
         context = []
-        # Add 2 shots before
-        for i in range(max(0, current_idx - 2), current_idx):
+        for i in range(max(0, first_idx - 2), first_idx):
             context.append(shots[i])
-        # Add current shot
-        context.append(shots[current_idx])
-        # Add 2 shots after
-        for i in range(current_idx + 1, min(len(shots), current_idx + 3)):
+        for i in range(first_idx, last_idx + 1):
+            context.append(shots[i])
+        for i in range(last_idx + 1, min(len(shots), last_idx + 3)):
             context.append(shots[i])
         return context
     
@@ -379,14 +614,20 @@ class AppBridge:
 
 def main():
     """Start the desktop application."""
+    logger.info(f"Startup begin (frozen={FROZEN}, base_dir={BASE_DIR}, data_dir={DATA_DIR})")
+
+    if not _webview2_runtime_installed():
+        _warn_no_webview2()
+        sys.exit(1)
+
     bridge = AppBridge()
     
     # Get the frontend HTML path
-    html_path = os.path.join(os.path.dirname(__file__), "templates", "desktop.html")
+    html_path = os.path.join(BASE_DIR, "templates", "desktop.html")
     
     if not os.path.exists(html_path):
         # Fallback to index.html
-        html_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+        html_path = os.path.join(BASE_DIR, "templates", "index.html")
     
     # Read HTML content
     with open(html_path, 'r', encoding='utf-8') as f:
@@ -404,9 +645,26 @@ def main():
     )
     
     bridge.attach_window(window)
-    
-    # Start pywebview
-    webview.start(debug=False)
+
+    # Deterministic WebView2 user-data folder: pre-created, writable, and
+    # survives across runs so first-run profile provisioning only happens once.
+    webview_storage = os.path.join(DATA_DIR, "WebView2")
+    os.makedirs(webview_storage, exist_ok=True)
+
+    # Optional per-machine workaround: set SBS_BROWSER_ARGS=--disable-gpu
+    # (e.g. on VMs/RDP) before launching; passed via the official WebView2
+    # environment variable.
+    browser_args = os.environ.get("SBS_BROWSER_ARGS", "").strip()
+    if browser_args:
+        merged = (os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "") + " " + browser_args).strip()
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = merged
+        logger.info(f"Additional browser args: {merged}")
+
+    watchdog_stop = _start_window_watchdog()
+    logger.info("Starting webview loop (EdgeChromium)")
+    webview.start(debug=False, private_mode=False, storage_path=webview_storage)
+    watchdog_stop.set()
+    logger.info("Webview loop ended")
 
 
 if __name__ == "__main__":

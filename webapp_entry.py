@@ -1,0 +1,110 @@
+"""
+Web UI entry point - starts the local Flask server and opens the browser.
+Packaged as ShotByShotWeb.exe alongside ShotByShotDesktop.exe.
+"""
+import os
+import sys
+import time
+import socket
+import logging
+import threading
+import webbrowser
+from datetime import datetime
+
+FROZEN = bool(getattr(sys, "frozen", False))
+if FROZEN:
+    BASE_DIR = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
+    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(sys.executable)), "ShotByShot")
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(BASE_DIR, "outputs")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Log files older than 30 days are no longer needed; delete them on startup so
+# the log directory does not grow without bound.
+def _cleanup_old_logs(log_dir, max_age_days=30):
+    try:
+        cutoff = datetime.now().timestamp() - max_age_days * 86400
+        for name in os.listdir(log_dir):
+            if not name.lower().endswith(".log"):
+                continue
+            path = os.path.join(log_dir, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+_cleanup_old_logs(DATA_DIR)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(DATA_DIR, 'shot_by_shot_web.log'), encoding='utf-8'),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
+
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _excepthook
+
+
+def _pick_port(preferred=5000):
+    """Use the preferred port when free, otherwise let the OS assign one."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", preferred))
+        return preferred
+    except OSError:
+        s.close()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def _open_browser_when_ready(url):
+    import urllib.request
+    for _ in range(240):
+        try:
+            urllib.request.urlopen(url, timeout=1)
+            break
+        except Exception:
+            time.sleep(0.5)
+    logger.info(f"Opening browser: {url}")
+    webbrowser.open(url)
+
+
+def main():
+    port = _pick_port(int(os.environ.get("SBS_PORT", "5000")))
+    url = f"http://127.0.0.1:{port}"
+    logger.info(f"Starting Shot-by-Shot web server at {url}")
+
+    threading.Thread(target=_open_browser_when_ready, args=(url,), daemon=True).start()
+
+    from app import app
+    app.run(host="127.0.0.1", port=port, debug=False)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logger.critical(f"Fatal: {e}")
+        print(f"Error starting web server: {e}")
+        print("See the log at", os.path.join(DATA_DIR, "shot_by_shot_web.log"))

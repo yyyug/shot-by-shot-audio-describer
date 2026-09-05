@@ -10,7 +10,7 @@
 
 This tool processes video files to generate shot-by-shot analysis with:
 - Shot boundary detection (PySceneDetect)
-- Audio transcription + dialogue gap detection (Faster-Whisper / whisper.cpp)
+- Audio transcription + dialogue gap detection (SenseVoice / FunASR)
 - **Character bank** — face detection & clustering across shots
 - **Context extension** — past/future shot context for AD placement
 - AI-powered video descriptions — **Multi-backend**: Gemini 2.5 Flash, OpenRouter (Qwen 2.5 VL 7B), or local Qwen (Unsloth bnb-4bit)
@@ -20,23 +20,138 @@ This tool processes video files to generate shot-by-shot analysis with:
 
 - Python 3.8+
 - FFmpeg (for video processing)
-- whisper.cpp (for transcription, optional)
+- SenseVoice (FunASR) for transcription, optional
 
 **Backend-specific:**
 - **OpenRouter**: API key
 - **Gemini**: API key + `pip install google-generativeai`
 - **Local Qwen**: GPU (T4 x2 recommended) + `pip install unsloth bitsandbytes`
 
-### Installation
+### Distribution / Installer (recommended for end users)
+
+A ready-to-use installer is included. It sets up everything **in an isolated
+virtual environment** so your system Python is never touched, uses the
+**pre-downloaded SenseVoice models** bundled in `models/sensevoice/` (no download
+on first run), and creates Start Menu shortcuts.
+
+| File | Purpose |
+|------|---------|
+| `setup.bat` | Double-click installer (venv + deps + shortcuts) |
+| `app-start.bat` | Launch the web interface |
+| `start-desktop.bat` | Launch the desktop app (pywebview) |
+| `uninstall.bat` | Remove shortcuts, venv, models, and optionally the app folder |
+
+Steps:
+
+```text
+1. Copy the whole folder (including models/) to the target machine.
+2. Double-click setup.bat (requires Python 3.8+ already installed).
+3. Start Menu > "Shot-by-Shot (Web)" to use it.
+4. Start Menu > "Shot-by-Shot (Uninstall)" to remove it.
+```
+
+The virtual environment lives in `.venv/` and SenseVoice models in
+`models/sensevoice/`. Uninstalling only removes these + shortcuts; your system
+Python and other projects are unaffected.
+
+### Packaging a single installer (no Python needed on target machines)
+
+End users who do not have Python can get a self-contained Windows desktop app.
+
+1. **Pre-download the models** (already done in this repo — `models/sensevoice/`).
+2. Run `build.ps1` (PowerShell):
+   - Builds the **desktop app** with **PyInstaller** into `dist/ShotByShotDesktop/`
+     (includes templates, static files, and the ~1GB SenseVoice models).
+   - If **Inno Setup 6** (free, https://jrsoftware.org/isinfo.php) is installed,
+     also compiles `dist/ShotByShot-Setup.exe` — a single-file **UI installer**
+     with shortcuts and an uninstall entry in Windows "Apps & Features".
+
+```text
+powershell -ExecutionPolicy Bypass -File build.ps1
+# or skip the Inno Setup step:
+powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
+```
+
+Notes:
+- The installer is large (~1.5–2GB) because the SenseVoice model (~1GB) is
+  bundled for offline use — this is the trade-off for a single offline installer.
+- The packaged desktop app stores outputs and the log in
+  `%LOCALAPPDATA%\ShotByShot\` (writable even under Program Files).
+- Only `models/sensevoice/` is bundled. Older unrelated files in `models/`
+  (`whisper/`, `shot_scale_ckpt.pth`) are **not** used by the current pipeline
+  (shot detection is PySceneDetect, not a model file) and are excluded.
+- If PyInstaller misses any dynamic imports (funasr/modelscope), add them to
+  `hiddenimports` in `packaging/ShotByShotDesktop.spec` and rebuild.
+- `dist/ShotByShotDesktop/` can also be zipped and distributed as a portable app.
+
+### Build environment packages (`.build-venv`)
+
+`build.ps1 -Obfuscate` creates `.build-venv` (standard `python -m venv`, CPython
+3.11) and installs exactly these groups — nothing touches your system Python:
+
+| Source | Packages (versions from current build) |
+|--------|------------------------------------------|
+| `requirements-cpu.txt` | torch 2.13.0+cpu, torchaudio 2.11.0+cpu, torchvision 0.28.0+cpu (PyTorch CPU index) |
+| `requirements.txt` | flask 3.1.3, flask-cors 6.0.5, scenedetect 0.7.1, pandas 3.0.5, numpy 2.4.6, requests 2.34.2, werkzeug 3.1.8, opencv-python 4.14.0 (**pinned `<5`**), scikit-learn 1.9.0, funasr 1.4.2, google-genai 2.19.0, num2words 0.5.14 |
+| `requirements-desktop.txt` | pywebview 6.2.1 |
+| build tools | pyinstaller 6.22.1, pyarmor 9.2.6 (trial — buy a license for commercial distribution), pytest 9.1.1 |
+
+Hard-won pins / gotchas:
+- **opencv-python must stay `<5`**: OpenCV 5 removed `CascadeClassifier`
+  (`processing/character_recognizer.py`). The module now loads the cascade
+  lazily, but keep 4.x so face detection actually works.
+- **google-genai** and **num2words** are runtime deps of
+  `processing/vlm_describer.py`, `processing/llm_summarizer.py` and
+  `stage2/promptloader.py`.
+- **torchvision** is imported at top level by `processing/film_grammar.py`,
+  so it must be installed even though only CPU transforms are used.
+- With `-Obfuscate`, PyArmor encrypts `desktop.py` + `processing/*`, which makes
+  their imports invisible to PyInstaller's static analysis — every third-party
+  import of those modules must be listed in `hiddenimports`
+  (`packaging/ShotByShotDesktop.spec`).
+
+### Troubleshooting the packaged desktop app
+
+- **Log file**: `%LOCALAPPDATA%\ShotByShot\shot_by_shot.log`. All uncaught
+  Python exceptions are written here (excepthook). If a crash produces **no**
+  log entry, it died at native level (WebView2/COM), not in Python code.
+- **First launch on a new machine** may be slow or crash once: Windows Defender
+  scans the ~90k-file tree and WebView2 initializes its user profile on first
+  run. Subsequent launches are normal.
+- **WebView2 Runtime required** (pre-installed on Windows 11). The Setup.exe
+  installs it automatically when missing; portable-zip users should download it
+  from https://developer.microsoft.com/microsoft-edge/webview2/
+- The app checks for WebView2 at startup and shows a clear message instead of
+  crashing when it is absent.
+
+### Optional: protect your Python source (Nuitka)
+
+PyInstaller bundles `.pyc` bytecode that anyone can extract and decompile.
+If you must protect your code, use **Nuitka** (`build-nuitka.ps1`): it
+compiles your `.py` files to native C / machine code, so the shipped app
+contains no readable Python. Third-party packages (torch, opencv, funasr)
+are already-compiled `.pyd`/`.dll` files and are copied as-is — only **your**
+code gets compiled to native.
+
+```text
+powershell -ExecutionPolicy Bypass -File build-nuitka.ps1
+```
+
+Trade-offs: first compile is slow (30–90 min, compiles torch's Python layer)
+and needs MSVC Build Tools installed. Alternative: **PyArmor** encrypts the
+bytecode instead of compiling (faster, still strong against casual decompiling).
+
+### Installation (manual / developer)
 
 ```bash
 git clone https://github.com/Jyxarthur/shot-by-shot.git
 cd shot-by-shot
+python -m venv .venv
+.venv\Scripts\activate        # Windows  (Linux/macOS: source .venv/bin/activate)
 pip install -r requirements.txt
-
-# Optional backends:
-pip install google-generativeai          # Gemini
-pip install unsloth unsloth_zoo bitsandbytes  # Local Qwen
+# optional desktop app:
+pip install -r requirements-desktop.txt
+python scripts\download_sensevoice.py   # pre-download SenseVoice models
 ```
 
 ### Usage
@@ -54,7 +169,7 @@ Open http://localhost:5000 in your browser.
 |--------|-------------|
 | **LLM Backend** | OpenRouter or Gemini |
 | **API Key** | OpenRouter or Gemini key (auto-toggles) |
-| **Enable Whisper** | Transcription and dialogue gap detection |
+| **Enable Transcription** | SenseVoice transcription and dialogue-gap-based AD interval detection |
 | **Language** | Language code (en, zh, etc.) or auto-detect |
 | **Character Bank** | Face detection + clustering per shot |
 | **Context Extension** | Extend AD intervals with surrounding shot context |
@@ -72,6 +187,7 @@ python run_processing.py video.mp4 -o output.csv --openrouter-key YOUR_API_KEY
 python run_processing.py video.mp4 --skip-whisper --openrouter-key YOUR_API_KEY
 python run_processing.py video.mp4 --skip-vlm
 python run_processing.py video.mp4 --skip-whisper --skip-vlm --skip-stage2
+python run_processing.py video.mp4 --context   # include surrounding shots in VLM prompts
 ```
 
 #### Kaggle Notebooks
@@ -95,7 +211,8 @@ python run_processing.py video.mp4 --skip-whisper --skip-vlm --skip-stage2
 ```
 app.py  ──  Flask web server
 ├── processing/shot_detector.py         ✅ Wired
-├── processing/whisper_transcriber.py   ✅ Wired
+├── processing/sensevoice_transcriber.py ✅ Wired (web + desktop)
+├── processing/dialogue_gap_detector.py ✅ Wired (AD interval from dialogue gaps)
 ├── processing/character_recognizer.py  ✅ Wired (web + notebook)
 ├── processing/context_extender.py      ✅ Wired (web)
 ├── processing/film_grammar.py          ✅ Wired (prompt variants)
@@ -117,7 +234,7 @@ app.py  ──  Flask web server
 
 此工具用於處理影片檔案，生成逐鏡頭分析，包括：
 - 鏡頭邊界檢測（PySceneDetect）
-- 音訊轉錄及對話空隙偵測（Faster-Whisper / whisper.cpp）
+- 音訊轉錄及對話空隙偵測（SenseVoice / FunASR）
 - **角色庫** — 全鏡頭人臉檢測與聚類
 - **上下文擴展** — 前後鏡頭上下文用於口述影像配置
 - AI 影片描述 — **多後端**：Gemini 2.5 Flash、OpenRouter (Qwen 2.5 VL 7B)、或本地 Qwen (Unsloth bnb-4bit)
@@ -127,23 +244,125 @@ app.py  ──  Flask web server
 
 - Python 3.8+
 - FFmpeg（用於影片處理）
-- whisper.cpp（用於轉錄，可選）
+- SenseVoice（FunASR，用於轉錄，可選）
 
 **各後端要求：**
 - **OpenRouter**：API 金鑰
 - **Gemini**：API 金鑰 + `pip install google-generativeai`
 - **本地 Qwen**：GPU（建議 T4 x2）+ `pip install unsloth bitsandbytes`
 
-### 安裝
+### 分發 / 安裝（推薦給一般使用者）
+
+內建一鍵安裝程式。所有套件安裝在**隔離的虛擬環境**中，不會污染系統 Python；
+使用隨附的**已預載 SenseVoice 模型**（位於 `models/sensevoice/`，第一次使用不需下載），並建立開始功能表捷徑。
+
+| 檔案 | 用途 |
+|------|------|
+| `setup.bat` | 雙擊即安裝（venv + 依賴 + 捷徑） |
+| `app-start.bat` | 啟動網頁介面 |
+| `start-desktop.bat` | 啟動桌面版（pywebview） |
+| `uninstall.bat` | 移除捷徑、venv、模型（可選擇是否刪除整個資料夾） |
+
+步驟：
+
+```text
+1. 將整個資料夾（含 models/）複製到目標電腦。
+2. 雙擊 setup.bat（需已安裝 Python 3.8+）。
+3. 開始功能表 >「Shot-by-Shot (Web)」即可使用。
+4. 開始功能表 >「Shot-by-Shot (Uninstall)」即可解除安裝。
+```
+
+虛擬環境位於 `.venv/`、SenseVoice 模型位於 `models/sensevoice/`。
+解除安裝只會刪除這些檔案與捷徑，不影響系統 Python 或其他專案。
+
+### 打包成單一安裝檔（目標電腦不需安裝 Python）
+
+沒有 Python 的使用者也能拿到可獨立執行的 Windows **桌面版**應用程式。
+
+1. **預先下載模型**（本 repo 已含 — `models/sensevoice/`）。
+2. 執行 `build.ps1`（PowerShell）：
+   - 用 **PyInstaller** 打包桌面版到 `dist/ShotByShotDesktop/`（內含 templates、static、
+     約 1GB 的 SenseVoice 模型）。
+   - 若已安裝 **Inno Setup 6**（免費，https://jrsoftware.org/isinfo.php），
+     會一併編譯出 `dist/ShotByShot-Setup.exe` — 單一檔案的 **UI 安裝程式**，
+     含捷徑與 Windows「應用程式與功能」中的解除安裝項目。
+
+```text
+powershell -ExecutionPolicy Bypass -File build.ps1
+# 或跳過 Inno Setup 步驟：
+powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
+```
+
+注意事項：
+- 安裝檔約 1.5–2GB，因為 SenseVoice 模型（約 1GB）隨附在內，以便離線使用。
+- 打包版桌面應用程式的輸出與 log 放在 `%LOCALAPPDATA%\ShotByShot\`（Program Files 下也可寫入）。
+- 只打包 `models/sensevoice/`。`models/` 下其他舊檔案（`whisper/`、`shot_scale_ckpt.pth`）
+  **目前管線未使用**（鏡頭偵測用 PySceneDetect，不需模型檔），故排除。
+- 若 PyInstaller 漏掉 funasr/modelscope 的動態 import，請在 `packaging/ShotByShotDesktop.spec` 的
+  `hiddenimports` 補上後重新打包。
+- `dist/ShotByShotDesktop/` 也可直接壓縮成 zip 當作可攜版分發。
+
+### 建置環境套件（`.build-venv`）
+
+`build.ps1 -Obfuscate` 會建立 `.build-venv`（標準 `python -m venv`，CPython 3.11）
+並安裝以下套件——不會動到系統 Python：
+
+| 來源 | 套件（目前建置版本） |
+|------|----------------------|
+| `requirements-cpu.txt` | torch 2.13.0+cpu、torchaudio 2.11.0+cpu、torchvision 0.28.0+cpu（PyTorch CPU index） |
+| `requirements.txt` | flask 3.1.3、flask-cors 6.0.5、scenedetect 0.7.1、pandas 3.0.5、numpy 2.4.6、requests 2.34.2、werkzeug 3.1.8、opencv-python 4.14.0（**鎖定 `<5`**）、scikit-learn 1.9.0、funasr 1.4.2、google-genai 2.19.0、num2words 0.5.14 |
+| `requirements-desktop.txt` | pywebview 6.2.1 |
+| 建置工具 | pyinstaller 6.22.1、pyarmor 9.2.6（試用版——商用分發需購買授權）、pytest 9.1.1 |
+
+重要釘選與陷阱：
+- **opencv-python 必須 `<5`**：OpenCV 5 移除了 `CascadeClassifier`
+  （`processing/character_recognizer.py` 使用）。模組已改為惰性載入不會炸，
+  但要讓人臉偵測正常運作請維持 4.x。
+- **google-genai** 與 **num2words** 是 `processing/vlm_describer.py`、
+  `processing/llm_summarizer.py`、`stage2/promptloader.py` 的執行期依賴。
+- **torchvision** 被 `processing/film_grammar.py` 在頂層 import，
+  即使只用 CPU transforms 也必須安裝。
+- 加 `-Obfuscate` 時，PyArmor 會加密 `desktop.py` + `processing/*`，
+  PyInstaller 的靜態分析看不到加密模組的 import——這些模組用到的所有第三方套件
+  都必須列在 `packaging/ShotByShotDesktop.spec` 的 `hiddenimports`。
+
+### 打包版桌面應用疑難排解
+
+- **Log 位置**：`%LOCALAPPDATA%\ShotByShot\shot_by_shot.log`。所有未捕捉的
+  Python 例外都會寫進這裡（excepthook）。若崩潰時 log **沒有**新內容，
+  代表是原生層級崩潰（WebView2/COM），不是 Python 程式碼問題。
+- **新機器第一次啟動**可能較慢或崩潰一次：Windows Defender 要掃描約 9 萬個檔案，
+  WebView2 也要首次建立使用者設定檔；第二次之後即正常。
+- **需要 Microsoft Edge WebView2 Runtime**（Windows 11 內建）。Setup.exe 偵測到
+  缺少時會自動安裝；可攜版 zip 使用者請自行到
+  https://developer.microsoft.com/microsoft-edge/webview2/ 下載安裝。
+- 應用程式啟動時會預檢 WebView2，缺少時顯示明確訊息而非神秘崩潰。
+
+### 選配：保護你的 Python 原始碼（Nuitka）
+
+PyInstaller 包的是 `.pyc` 位元碼，別人可以用工具解壓並還原出原始碼。
+若要保護程式碼，可用 **Nuitka**（`build-nuitka.ps1`）：它把你的 `.py` **編譯成原生 C/機器碼**，
+發佈的程式內不含可讀的 Python 原始碼。第三方套件（torch、opencv、funasr）本身已是編譯過的
+`.pyd`/`.dll`，會原樣複製 — 只有**你自己的程式碼**會被編譯成原生碼。
+
+```text
+powershell -ExecutionPolicy Bypass -File build-nuitka.ps1
+```
+
+代價：第一次編譯較慢（30–90 分鐘，需編譯 torch 的 Python 層），且需安裝 MSVC Build Tools。
+另一個選擇：**PyArmor** 用加密取代編譯（較快，對一般反編譯仍有強防護）。
+
+### 安裝（手動 / 開發者）
 
 ```bash
 git clone https://github.com/Jyxarthur/shot-by-shot.git
 cd shot-by-shot
+python -m venv .venv
+.venv\Scripts\activate        # Windows  （Linux/macOS：source .venv/bin/activate）
 pip install -r requirements.txt
-
-# 可選後端：
-pip install google-generativeai              # Gemini
-pip install unsloth unsloth_zoo bitsandbytes  # 本地 Qwen
+# 桌面版（可選）：
+pip install -r requirements-desktop.txt
+python scripts\download_sensevoice.py   # 預先下載 SenseVoice 模型
 ```
 
 ### 使用方法
@@ -161,7 +380,7 @@ python app.py
 |------|------|
 | **LLM Backend** | OpenRouter 或 Gemini |
 | **API Key** | OpenRouter 或 Gemini 金鑰（自動切換） |
-| **Enable Whisper** | 轉錄和對話空隙偵測 |
+| **啟用轉錄** | SenseVoice 轉錄與對話空隙為基礎的 AD 區間偵測 |
 | **Language** | 語言代碼（en, zh 等）或自動偵測 |
 | **Character Bank** | 每鏡頭人臉檢測與聚類 |
 | **Context Extension** | 用周圍鏡頭上下文擴展口述影像區間 |

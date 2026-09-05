@@ -8,8 +8,27 @@ from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Dict, Tuple
 
 
-CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+_face_cascade = None
+_face_cascade_error = None
+
+
+def _get_face_cascade():
+    """Lazily load the Haar cascade so importing this module never fails,
+    even on OpenCV builds without CascadeClassifier (e.g. OpenCV 5)."""
+    global _face_cascade, _face_cascade_error
+    if _face_cascade is not None:
+        return _face_cascade
+    if _face_cascade_error is not None:
+        raise RuntimeError("Face detection unavailable") from _face_cascade_error
+    try:
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        _face_cascade = cv2.CascadeClassifier(cascade_path)
+        if _face_cascade.empty():
+            raise RuntimeError(f"Failed to load cascade: {cascade_path}")
+    except Exception as e:
+        _face_cascade_error = e
+        raise
+    return _face_cascade
 
 
 def detect_faces(frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
@@ -23,7 +42,7 @@ def detect_faces(frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
         List of (x, y, w, h) bounding boxes
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    faces = _get_face_cascade().detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
     return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
 
 

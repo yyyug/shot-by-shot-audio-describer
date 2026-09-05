@@ -1,0 +1,7 @@
+# CPU-only PyTorch (no CUDA) for the standalone distribution.
+# Install this BEFORE requirements.txt so `pip install funasr` sees torch
+# already satisfied and does not pull the ~2.3GB CUDA wheels from PyPI.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchaudio
+torchvision

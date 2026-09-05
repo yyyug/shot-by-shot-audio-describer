@@ -4,5 +4,12 @@ scenedetect>=0.6.0
 pandas>=1.5.0
 requests>=2.31.0
 werkzeug>=2.3.0
-opencv-python>=4.8.0
+# OpenCV 5.x removed CascadeClassifier (used by character_recognizer) — stay on 4.x.
+opencv-python>=4.8.0,<5
 scikit-learn>=1.3.0
+funasr>=1.3.29
+google-genai
+num2words
+# NOTE: PyTorch is NOT listed here on purpose.
+# For CPU-only builds install requirements-cpu.txt FIRST (torch + torchaudio),
+# otherwise pip resolves the ~2.3GB CUDA wheels from PyPI.

@@ -2,18 +2,20 @@
 LLM Summarizer - supports Gemini, OpenRouter, and OpenAI backends
 """
 import os
+import re
+import json
 import random
+import logging
 import pandas as pd
 import requests
 import time
 from typing import List, Optional
 
-# Import original repo prompt function
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'stage2'))
+logger = logging.getLogger(__name__)
 
+# Import original repo prompt function
 try:
-    from promptloader import get_user_prompt
+    from stage2.promptloader import get_user_prompt
 except ImportError:
     def get_user_prompt(mode, prompt_idx, verb_list, text_pred, word_limit, examples):
         return f"Summarize: {text_pred} in {word_limit} words."
@@ -21,6 +23,13 @@ except ImportError:
 # API URLs
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+
+# Shared API-call helpers (pause-on-quota, provider backoff, 401 give-up).
+# Imported lazily via _get_api_common() at call time so both frozen builds
+# (desktop/web) keep a single source of truth.
+def _get_api_common():
+    import processing._api_common as m
+    return m
 
 # Dataset-specific verb lists (from original repo)
 VERB_LISTS = {
@@ -90,27 +99,55 @@ def sample_few_shot_examples(video_type: str, duration_seconds: float, num_examp
 
 
 def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0):
-    """Call Gemini API using google-genai library."""
+    """Call Gemini API using google-genai library.
+
+    Uses the shared API helpers: on a 429/401/403 it pauses every worker on
+    every task (via the shared pause event), honors the provider's retryDelay
+    during backoff, and gives up immediately on permanent auth errors
+    instead of burning retries against a dead key."""
     try:
         from google import genai
     except ImportError:
         raise RuntimeError("google-genai not installed. Run: pip install google-genai")
-    
+
+    common = _get_api_common()
+
     client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
-    
+
     for attempt in range(max_retries):
         try:
+            # Wait out any global quota crisis triggered by another worker
+            # before we touch the API again.
+            common.wait_if_paused()
             response = client.models.generate_content(model=model, contents=prompt)
             return response.text.strip()
         except Exception as e:
+            status = common.extract_status(e)
+            logger.warning(f"Gemini API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
+
+            if common.classify_crisis(status):
+                # Pause ALL workers so the whole pipeline backs off together
+                # instead of a stampede on the same shared quota / key.
+                common.pause_all()
+                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
+                common.pause_and_wait(delay)
+
+            if common.should_give_up(status):
+                # Permanent auth/config error - retrying a dead key is pointless
+                # and only worsens the quota picture.
+                raise RuntimeError(f"Gemini API failed (permanent error, status {status}): {e}")
+
             if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
+                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
+                logger.info(f"Gemini API retry in {delay:.1f}s")
+                time.sleep(delay)
                 continue
             raise RuntimeError(f"Gemini API failed: {e}")
 
 
 def _call_openrouter(prompt, api_key, model="qwen/qwen3.7-plus", max_retries=3, retry_delay=1.0):
     """Call OpenRouter API."""
+    common = _get_api_common()
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -120,18 +157,29 @@ def _call_openrouter(prompt, api_key, model="qwen/qwen3.7-plus", max_retries=3, 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     for attempt in range(max_retries):
         try:
+            common.wait_if_paused()
             response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"].strip()
         except requests.exceptions.RequestException as e:
+            status = common.extract_status(e)
+            logger.warning(f"OpenRouter API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
+            if common.classify_crisis(status):
+                common.pause_all()
+                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
+                common.pause_and_wait(delay)
+            if common.should_give_up(status):
+                raise RuntimeError(f"OpenRouter API failed (permanent error, status {status}): {e}")
             if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
+                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
+                time.sleep(delay)
                 continue
             raise RuntimeError(f"OpenRouter API failed: {e}")
 
 
 def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay=1.0):
     """Call OpenAI API."""
+    common = _get_api_common()
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -141,14 +189,127 @@ def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     for attempt in range(max_retries):
         try:
+            common.wait_if_paused()
             response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"].strip()
         except requests.exceptions.RequestException as e:
+            status = common.extract_status(e)
+            logger.warning(f"OpenAI API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
+            if common.classify_crisis(status):
+                common.pause_all()
+                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
+                common.pause_and_wait(delay)
+            if common.should_give_up(status):
+                raise RuntimeError(f"OpenAI API failed (permanent error, status {status}): {e}")
             if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
+                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
+                time.sleep(delay)
                 continue
             raise RuntimeError(f"OpenAI API failed: {e}")
+
+
+def _extract_ad_sentence(raw: str) -> str:
+    """Pull the actual AD sentence out of a model response.
+
+    Models like to wrap the JSON payload in markdown code fences, emit
+    trailing prose, or return the value as a list - the old naive
+    `'{"summarized_AD":' in text` + json.loads approach leaked all of
+    those straight into the output CSVs.
+    """
+    text = (raw or "").strip()
+    # 1) Strip markdown code fences
+    text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    text = re.sub(r"```\s*$", "", text).strip()
+    # 2) Strict JSON on the first {...} block
+    m = re.search(r"\{.*\}", text, re.S)
+    if m:
+        try:
+            val = json.loads(m.group()).get("summarized_AD")
+            if isinstance(val, list):
+                val = " ".join(str(x) for x in val).strip()
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        except Exception:
+            pass
+    # 3) Regex fallback: grab the string value even from broken JSON
+    m2 = re.search(r'"summarized_AD"\s*:\s*"([^"]*)"?', text)
+    if m2:
+        return m2.group(1).strip()
+    # 4) Plain text response - drop any leftover fences/braces
+    return text.replace("```", "").strip()
+
+
+def _http_error_hint(status_code: int) -> str:
+    hints = {
+        400: "Bad request - check model name / request format",
+        401: "Unauthorized - invalid or missing API key",
+        403: "Forbidden - this key has no access to the model",
+        404: "Not found - model name does not exist on this endpoint",
+        422: "Unprocessable request - check parameters",
+        429: "Rate limit / quota exceeded - wait or top up billing",
+    }
+    if status_code in hints:
+        return hints[status_code]
+    if 500 <= status_code <= 599:
+        return "Provider server error - try again later"
+    return "Request failed"
+
+
+def test_connection(api_key, backend="gemini-3.7-flash", openai_url=None, openai_model=None):
+    """Send a tiny prompt to verify the credentials work end-to-end.
+
+    Returns (ok, message). The message is UI-ready: either a confirmation
+    or a mapped HTTP error (401/403/404/429/5xx), timeout, network failure,
+    or empty-response report."""
+    prompt = "Reply with the single word OK."
+    try:
+        if not api_key or not str(api_key).strip():
+            return False, "No API key provided"
+
+        if backend.startswith("gemini"):
+            from google import genai
+            client = genai.Client(api_key=api_key)
+            resp = client.models.generate_content(model=backend, contents=prompt)
+            text = ""
+            try:
+                text = (resp.text or "").strip()
+            except Exception:
+                pass
+            if not text:
+                return False, "Empty response (possible safety block or quota issue)"
+            return True, f"Connection OK - {backend} replied: {text[:50]}"
+
+        if backend == "openrouter":
+            url = OPENROUTER_API_URL
+            model = openai_model or "qwen/qwen3.7-plus"
+        else:  # openai-compatible
+            base = (openai_url or "https://api.openai.com/v1").rstrip("/")
+            url = base + "/chat/completions"
+            model = openai_model or "gpt-latest"
+
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 10},
+            timeout=25,
+        )
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code} - {_http_error_hint(resp.status_code)} | {resp.text[:150]}"
+        content = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        if not content:
+            return False, "HTTP 200 but the model returned empty content"
+        return True, f"Connection OK - {model} replied: {content[:50]}"
+
+    except requests.exceptions.Timeout:
+        return False, "Timeout - server did not respond within 25s"
+    except requests.exceptions.ConnectionError as e:
+        return False, f"Network error - cannot reach endpoint ({e.__class__.__name__})"
+    except Exception as e:
+        code = getattr(e, "code", None) or getattr(e, "status_code", None)
+        if isinstance(code, int):
+            return False, f"HTTP {code} - {_http_error_hint(code)} | {str(e)[:150]}"
+        return False, f"{e.__class__.__name__}: {str(e)[:200]}"
 
 
 def summarize_to_ad(
@@ -188,21 +349,13 @@ def summarize_to_ad(
     elif backend == "openrouter":
         model = model or "qwen/qwen3.7-plus"
         ad_text = _call_openrouter(prompt, api_key, model, max_retries, retry_delay)
-    elif backend == "openai":
+    elif backend in ("openai", "openai-compatible"):
         model = model or "gpt-latest"
         ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay)
     else:
         raise ValueError(f"Unknown backend: {backend}")
     
-    # Parse JSON output if present
-    if '{"summarized_AD":' in ad_text:
-        import json
-        try:
-            ad_text = json.loads(ad_text).get("summarized_AD", ad_text)
-        except:
-            pass
-    
-    ad_text = ad_text.strip('"').strip("'")
+    ad_text = _extract_ad_sentence(ad_text)
     if not ad_text.endswith("."):
         ad_text += "."
     return ad_text
@@ -217,7 +370,8 @@ def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str 
         try:
             ad_sentence = summarize_to_ad(item["description"], api_key, backend, 
                                          duration_seconds=duration, video_type=video_type, examples=examples)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"summarize_to_ad failed for shot {item['shot_id']}: {e}", exc_info=True)
             ad_sentence = ""
         results.append({"shot_id": item["shot_id"], "start": item["start"], 
                        "end": item["end"], "ad_sentence": ad_sentence})

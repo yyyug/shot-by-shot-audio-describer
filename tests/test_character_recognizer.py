@@ -1,12 +1,23 @@
 import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
+import processing.character_recognizer as cr
 from processing.character_recognizer import (
     detect_faces,
     extract_face_embeddings,
     cluster_faces,
     recognize_characters,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_cascade_cache():
+    """Keep the lazy cascade cache isolated between tests."""
+    cr._face_cascade = None
+    cr._face_cascade_error = None
+    yield
+    cr._face_cascade = None
+    cr._face_cascade_error = None
 
 
 # ---------------------------------------------------------------------------
@@ -25,8 +36,10 @@ def test_detect_faces_returns_tuples():
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     mock_faces = np.array([[10, 20, 50, 60]], dtype=np.int32)
 
-    with patch("processing.character_recognizer.face_cascade") as cascade:
+    with patch("processing.character_recognizer._get_face_cascade") as get_cascade:
+        cascade = MagicMock()
         cascade.detectMultiScale.return_value = mock_faces
+        get_cascade.return_value = cascade
         result = detect_faces(frame)
 
     assert len(result) == 1
@@ -63,19 +76,18 @@ def test_extract_face_embeddings_faces_detected():
 
         # Detect faces returns one face
         cv.cvtColor.return_value = np.zeros((480, 640), dtype=np.uint8)
-        cv.data = MagicMock()
-        cv.data.haarcascades = ""
-        with patch("processing.character_recognizer.face_cascade") as cascade:
+        with patch("processing.character_recognizer._get_face_cascade") as get_cascade:
+            cascade = MagicMock()
             cascade.detectMultiScale.return_value = np.array([[100, 100, 200, 200]], dtype=np.int32)
+            get_cascade.return_value = cascade
             cv.cvtColor.return_value = np.zeros((480, 640), dtype=np.uint8)
             cv.resize.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
             cv.calcHist.return_value = np.random.rand(8, 8, 8).astype(np.float32)
             cv.normalize.return_value = None
 
-            with patch("processing.character_recognizer.CASCADE_PATH", ""):
-                result = extract_face_embeddings(
-                    "fake.mp4", {"start_time": 0, "end_time": 2}, num_frames=4
-                )
+            result = extract_face_embeddings(
+                "fake.mp4", {"start_time": 0, "end_time": 2}, num_frames=4
+            )
 
         assert len(result) > 0
         assert all(isinstance(e, np.ndarray) for e in result)

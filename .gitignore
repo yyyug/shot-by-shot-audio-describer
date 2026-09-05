@@ -20,6 +20,18 @@ outputs/
 
 # Models (large files)
 models/
+*.pth
+
+# Build artifacts
+build/
+dist/
+.build-obf/
+.build-venv/
+
+# Installer artifacts
+*.exe
+*.zip
+output.log
 
 # IDE
 .vscode/

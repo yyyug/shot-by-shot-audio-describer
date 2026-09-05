@@ -1,174 +1,256 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shot-by-Shot — Video Audio Description Generator</title>
+    <title>Shot-by-Shot Audio Describer</title>
     <link rel="stylesheet" href="/static/style.css">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; margin-bottom: 30px; font-size: 24px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: 500; color: #555; }
+        select, input[type="password"], input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .checkbox { display: flex; align-items: center; gap: 8px; }
+        .checkbox input { width: auto; }
+        button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .file-select { display: flex; gap: 10px; align-items: center; }
+        .file-select input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background: #f9f9f9; }
+        .file-select button { width: auto; padding: 10px 20px; margin-top: 0; }
+        .key-row { display: flex; gap: 8px; align-items: center; }
+        .key-row input { flex: 1; }
+        .key-row button { width: auto; margin-top: 0; padding: 10px 16px; white-space: nowrap; }
+        .test-result { display: block; margin-top: 6px; font-size: 13px; word-break: break-word; }
+        .test-result.ok { color: #28a745; }
+        .test-result.err { color: #dc3545; }
+        .hidden { display: none !important; }
+        #videoFile { display: none; }
+        .progress { margin-top: 20px; padding: 15px; background: #f0f7ff; border-radius: 8px; }
+        .progress h3 { margin-bottom: 10px; color: #333; }
+        .progress p { color: #666; margin: 5px 0; }
+        .result { margin-top: 20px; padding: 15px; background: #f0fff0; border-radius: 8px; }
+        .result h3 { margin-bottom: 10px; color: #28a745; }
+        .error { margin-top: 20px; padding: 15px; background: #fff0f0; border-radius: 8px; }
+        .error h3 { margin-bottom: 10px; color: #dc3545; }
+        .download-btn { display: inline-block; padding: 10px 20px; background: #28a745; color: white; text-decoration: none; border-radius: 5px; margin: 5px; cursor: pointer; }
+        .download-btn:hover { background: #218838; }
+        .progress-bar { width: 100%; height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #007bff, #00bfff); width: 0%; transition: width 0.3s ease; }
+    </style>
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>Shot-by-Shot</h1>
-            <p class="subtitle">Oxford VGG Film-Grammar-Aware Audio Description Generator</p>
-        </header>
+        <h1>Shot-by-Shot Video Processor</h1>
 
-        <div class="upload-section">
-            <div class="file-input-wrapper">
-                <input type="file" id="videoFile" accept="video/*" required>
-                <label for="videoFile" class="file-label">
-                    <span class="file-icon">🎬</span>
-                    <span class="file-text">Select MP4 Video</span>
-                </label>
-                <span class="file-name" id="fileName">No file selected</span>
+        <form id="uploadForm">
+            <!-- Video file -->
+            <div class="form-group">
+                <label>Video File:</label>
+                <div class="file-select">
+                    <input type="text" id="videoPathDisplay" readonly value="" style="background: #f9f9f9;">
+                    <button type="button" id="selectFileBtn">Select File</button>
+                </div>
+                <input type="file" id="videoFile" accept="video/*">
             </div>
 
-            <div class="options">
-                <div class="option-row">
-                    <label for="backend">LLM Backend:</label>
-                    <select id="backend">
-                        <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash</option>
-                        <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
-                        <option value="openrouter">OpenRouter (Qwen 2.5 VL)</option>
-                    </select>
-                </div>
-
-                <div class="option-row" id="apiKeyRow">
-                    <label for="apiKey">API Key:</label>
-                    <input type="password" id="apiKey" placeholder="Enter your API key">
-                </div>
-
-                <div class="option-row">
-                    <label for="videoType">Video Type:</label>
-                    <select id="videoType">
-                        <option value="movie">Movie / TV Series</option>
-                        <option value="documentary">Documentary</option>
-                        <option value="youtube">YouTube Video</option>
-                    </select>
-                </div>
-
-                <div class="option-row">
-                    <label>
-                        <input type="checkbox" id="useCharacterBank">
-                        Enable Character Recognition
-                    </label>
-                </div>
-
-                <div class="option-row">
-                    <label>
-                        <input type="checkbox" id="skipStage2">
-                        Skip Stage 2 (Stage 1 only)
-                    </label>
-                </div>
+            <!-- LLM -->
+            <div class="form-group">
+                <label for="backend">LLM:</label>
+                <select id="backend" name="backend">
+                    <option value="gemini-3.7-flash" selected>Gemini 3.7 Flash</option>
+                    <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                    <option value="openai-compatible">OpenAI Compatible</option>
+                </select>
             </div>
 
-            <button id="processBtn" class="process-btn" disabled>
-                <span class="btn-text">Start Processing</span>
-                <span class="btn-loader hidden"></span>
-            </button>
+            <!-- Gemini API Key -->
+            <div class="form-group" id="geminiKeyGroup">
+                <label for="apiKey">Gemini API Key:</label>
+                <div class="key-row">
+                    <input type="password" id="apiKey" name="apiKey">
+                    <button type="button" id="testKeyBtnMain">Test</button>
+                </div>
+                <span id="testResultMain" class="test-result"></span>
+            </div>
+
+            <!-- OpenAI Compatible Settings (hidden by default) -->
+            <div class="form-group hidden" id="openaiCompatibleGroup">
+                <label for="openaiUrl">API Base URL:</label>
+                <input type="text" id="openaiUrl" name="openaiUrl" value="https://api.openai.com/v1">
+                <label for="openaiModel" style="margin-top: 8px;">Model Name:</label>
+                <input type="text" id="openaiModel" name="openaiModel" value="gpt-4o">
+                <label for="openaiApiKey" style="margin-top: 8px;">API Key:</label>
+                <div class="key-row">
+                    <input type="password" id="openaiApiKey" name="openaiApiKey">
+                    <button type="button" id="testKeyBtnOpenAI">Test</button>
+                </div>
+                <span id="testResultOpenAI" class="test-result"></span>
+            </div>
+
+            <!-- Checkboxes -->
+            <div class="form-group checkbox">
+                <input type="checkbox" id="useWhisper" name="useWhisper" checked>
+                <label for="useWhisper">Enable dialogue gap detection</label>
+            </div>
+            <div class="form-group checkbox">
+                <input type="checkbox" id="useContextExtender" name="useContextExtender">
+                <label for="useContextExtender">Extend AD intervals with past/future shot context</label>
+            </div>
+
+            <!-- Video type -->
+            <div class="form-group">
+                <label for="videoType">Video Type:</label>
+                <select id="videoType" name="videoType">
+                    <option value="movie">Movie</option>
+                    <option value="tv_series">TV Series</option>
+                    <option value="stage_performance">Stage Performance</option>
+                    <option value="custom">Custom</option>
+                </select>
+            </div>
+            <div class="form-group" id="customPromptGroup" style="display: none;">
+                <label for="customPrompt">Custom opening prompt:</label>
+                <textarea id="customPrompt" name="customPrompt" rows="5"
+                    style="width:100%; font-family:inherit;">Please watch the following video, pay extra attention to describing the color palette, lighting, and camera work.</textarea>
+                <p style="color:#888; font-size:12px; margin-top:4px;">
+                    This replaces the first opening sentence. The "Where different shot numbers are labelled..."
+                    sentence and the rest of the description template are kept as-is.
+                </p>
+            </div>
+
+            <button type="submit" id="startBtn">Start</button>
+        </form>
+
+        <!-- Progress -->
+        <div id="progress" class="progress hidden">
+            <h3>Processing...</h3>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <p id="progressText">Initializing...</p>
+            <p id="progressDetail" style="color: #888; font-size: 12px;"></p>
         </div>
 
-        <div id="progressSection" class="progress-section hidden">
-            <div class="progress-header">
-                <h2>Processing...</h2>
-                <span id="progressPercent">0%</span>
-            </div>
-            <div class="progress-bar-wrapper">
-                <div class="progress-bar" id="progressBar"></div>
-            </div>
-            <div class="progress-details">
-                <span id="progressStep">Initializing...</span>
-                <span id="shotsCount"></span>
-            </div>
+        <!-- Results (also used on failure when some files were still produced) -->
+        <div id="result" class="result hidden">
+            <h3 id="resultTitle">Complete!</h3>
+            <div id="resultBanner" class="hidden" style="margin: 12px 0; padding: 10px 14px; border-radius: 6px; color: #721c24; background: #f8d7da; border: 1px solid #f5c6cb;"></div>
+            <div id="downloadLinks"></div>
+            <button type="button" id="resetBtn" style="margin-top: 10px;">Process Another Video</button>
         </div>
 
-        <div id="downloadSection" class="download-section hidden">
-            <h2>Processing Complete!</h2>
-            <div class="download-buttons">
-                <a id="downloadBtn" class="download-btn" download>
-                    <span>📥 Download Full CSV</span>
-                </a>
-                <a id="downloadStage1Btn" class="download-btn hidden" download>
-                    <span>📥 Download Stage 1 (Detailed)</span>
-                </a>
-                <a id="downloadStage2Btn" class="download-btn hidden" download>
-                    <span>📥 Download Stage 2 (Summarized AD)</span>
-                </a>
-            </div>
-            <button id="resetBtn" class="reset-btn">Process Another Video</button>
-        </div>
-
-        <div id="errorSection" class="error-section hidden">
-            <h2>Error</h2>
-            <p id="errorMessage"></p>
-            <button id="retryBtn" class="reset-btn">Try Again</button>
+        <!-- Error (pre-processing / connection failures, before any task runs) -->
+        <div id="error" class="error hidden">
+            <h3>Error</h3>
+            <p id="errorText"></p>
         </div>
     </div>
 
     <script>
         const videoFile = document.getElementById('videoFile');
-        const fileName = document.getElementById('fileName');
-        const backend = document.getElementById('backend');
-        const apiKey = document.getElementById('apiKey');
-        const videoType = document.getElementById('videoType');
-        const useCharacterBank = document.getElementById('useCharacterBank');
-        const skipStage2 = document.getElementById('skipStage2');
-        const processBtn = document.getElementById('processBtn');
-        const progressSection = document.getElementById('progressSection');
-        const progressPercent = document.getElementById('progressPercent');
-        const progressBar = document.getElementById('progressBar');
-        const progressStep = document.getElementById('progressStep');
-        const shotsCount = document.getElementById('shotsCount');
-        const downloadSection = document.getElementById('downloadSection');
-        const downloadBtn = document.getElementById('downloadBtn');
-        const downloadStage1Btn = document.getElementById('downloadStage1Btn');
-        const downloadStage2Btn = document.getElementById('downloadStage2Btn');
-        const resetBtn = document.getElementById('resetBtn');
-        const errorSection = document.getElementById('errorSection');
-        const errorMessage = document.getElementById('errorMessage');
-        const retryBtn = document.getElementById('retryBtn');
+        const videoPathDisplay = document.getElementById('videoPathDisplay');
+        let currentTaskId = null;
+
+        // Select File button opens the browser's native file picker
+        document.getElementById('selectFileBtn').addEventListener('click', () => {
+            videoFile.click();
+        });
 
         videoFile.addEventListener('change', () => {
             if (videoFile.files.length > 0) {
-                fileName.textContent = videoFile.files[0].name;
-                processBtn.disabled = false;
+                videoPathDisplay.value = videoFile.files[0].name;
             } else {
-                fileName.textContent = 'No file selected';
-                processBtn.disabled = true;
+                videoPathDisplay.value = '';
             }
         });
 
-        processBtn.addEventListener('click', startProcessing);
-        resetBtn.addEventListener('click', resetUI);
-        retryBtn.addEventListener('click', resetUI);
+        // Toggle OpenAI Compatible fields
+        document.getElementById('backend').addEventListener('change', function() {
+            const isOpenAI = this.value === 'openai-compatible';
+            document.getElementById('openaiCompatibleGroup').classList.toggle('hidden', !isOpenAI);
+            document.getElementById('geminiKeyGroup').classList.toggle('hidden', isOpenAI);
+        });
+
+        // Toggle custom opening prompt editor
+        document.getElementById('videoType').addEventListener('change', function() {
+            document.getElementById('customPromptGroup').style.display =
+                (this.value === 'custom') ? '' : 'none';
+        });
+
+        // API key test: send a tiny prompt and report the outcome
+        async function runApiTest(resultEl) {
+            const b = document.getElementById('backend').value;
+            const key = b === 'openai-compatible'
+                ? document.getElementById('openaiApiKey').value.trim()
+                : document.getElementById('apiKey').value.trim();
+            resultEl.textContent = 'Testing...';
+            resultEl.className = 'test-result';
+            const payload = { backend: b, api_key: key };
+            if (b === 'openai-compatible') {
+                payload.openai_url = document.getElementById('openaiUrl').value;
+                payload.openai_model = document.getElementById('openaiModel').value;
+            }
+            try {
+                const r = await fetch('/test_api', { method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload) });
+                const d = await r.json();
+                resultEl.textContent = (d.ok ? '[OK] ' : '[ERROR] ') + d.message;
+                resultEl.classList.add(d.ok ? 'ok' : 'err');
+            } catch (err) {
+                resultEl.textContent = '[ERROR] Request failed: ' + err.message;
+                resultEl.classList.add('err');
+            }
+        }
+        document.getElementById('testKeyBtnMain').addEventListener('click', () => runApiTest(document.getElementById('testResultMain')));
+        document.getElementById('testKeyBtnOpenAI').addEventListener('click', () => runApiTest(document.getElementById('testResultOpenAI')));
 
         function resetUI() {
-            progressSection.classList.add('hidden');
-            downloadSection.classList.add('hidden');
-            errorSection.classList.add('hidden');
-            processBtn.disabled = false;
-            processBtn.querySelector('.btn-text').textContent = 'Start Processing';
-            processBtn.querySelector('.btn-loader').classList.add('hidden');
+            document.getElementById('progress').classList.add('hidden');
+            document.getElementById('result').classList.add('hidden');
+            document.getElementById('error').classList.add('hidden');
+            document.getElementById('startBtn').disabled = false;
         }
 
-        async function startProcessing() {
-            const file = videoFile.files[0];
-            if (!file) return;
+        document.getElementById('resetBtn').addEventListener('click', resetUI);
 
-            processBtn.disabled = true;
-            processBtn.querySelector('.btn-text').textContent = 'Processing...';
-            processBtn.querySelector('.btn-loader').classList.remove('hidden');
-            progressSection.classList.remove('hidden');
-            downloadSection.classList.add('hidden');
-            errorSection.classList.add('hidden');
+        // Form submission
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const file = videoFile.files[0];
+            if (!file) {
+                alert('Please select a video file');
+                return;
+            }
+
+            const backend = document.getElementById('backend').value;
+            const keyField = backend === 'openai-compatible' ? 'openaiApiKey' : 'apiKey';
+            if (!document.getElementById(keyField).value.trim()) {
+                alert('Please enter your API key - without it the output CSVs will be empty');
+                return;
+            }
+
+            document.getElementById('progress').classList.remove('hidden');
+            document.getElementById('result').classList.add('hidden');
+            document.getElementById('error').classList.add('hidden');
+            document.getElementById('startBtn').disabled = true;
 
             const formData = new FormData();
             formData.append('video', file);
-            formData.append('backend', backend.value);
-            formData.append('api_key', apiKey.value);
-            formData.append('video_type', videoType.value);
-            formData.append('use_character_bank', useCharacterBank.checked);
-            formData.append('skip_stage2', skipStage2.checked);
+            formData.append('backend', backend);
+            formData.append('api_key', backend === 'openai-compatible'
+                ? document.getElementById('openaiApiKey').value
+                : document.getElementById('apiKey').value);
+            formData.append('openai_url', document.getElementById('openaiUrl').value);
+            formData.append('openai_model', document.getElementById('openaiModel').value);
+            formData.append('use_whisper', document.getElementById('useWhisper').checked);
+            formData.append('use_context_extender', document.getElementById('useContextExtender').checked);
+            formData.append('video_type', document.getElementById('videoType').value);
+            formData.append('custom_opening', document.getElementById('customPrompt').value.trim());
 
             try {
                 const response = await fetch('/upload', { method: 'POST', body: formData });
@@ -183,30 +265,27 @@
             } catch (err) {
                 showError(err.message);
             }
-        }
+        });
 
+        // Poll progress via server-sent events
         function pollProgress(taskId) {
+            currentTaskId = taskId;
             const eventSource = new EventSource(`/progress/${taskId}`);
 
             eventSource.onmessage = (event) => {
                 const status = JSON.parse(event.data);
-                const pct = status.progress || 0;
 
-                progressBar.style.width = `${pct}%`;
-                progressPercent.textContent = `${pct}%`;
-                progressStep.textContent = (status.step || 'Processing...') + 
-                    (status.detail ? ` — ${status.detail}` : '');
-
-                if (status.shots_count) {
-                    shotsCount.textContent = `${status.shots_count} shots detected`;
-                }
+                document.getElementById('progressText').textContent =
+                    `${status.step || 'Processing...'} (${Math.round(status.progress || 0)}%)`;
+                document.getElementById('progressDetail').textContent = status.detail || '';
+                document.getElementById('progressFill').style.width = `${status.progress || 0}%`;
 
                 if (status.status === 'completed') {
                     eventSource.close();
-                    showDownload(taskId, status);
+                    showResult(status);
                 } else if (status.status === 'failed') {
                     eventSource.close();
-                    showError(status.error || 'Processing failed');
+                    showResult(status, status.error || 'Processing failed');
                 }
             };
 
@@ -216,30 +295,48 @@
             };
         }
 
-        function showDownload(taskId, status) {
-            progressSection.classList.add('hidden');
-            downloadSection.classList.remove('hidden');
+        function showResult(status, bannerMsg) {
+            document.getElementById('progress').classList.add('hidden');
+            document.getElementById('result').classList.remove('hidden');
+            document.getElementById('startBtn').disabled = false;
 
-            downloadBtn.href = `/download/${taskId}`;
-            downloadBtn.classList.remove('hidden');
+            const banner = document.getElementById('resultBanner');
+            const title = document.getElementById('resultTitle');
+            if (bannerMsg) {
+                title.textContent = 'Finished with issues';
+                banner.textContent = bannerMsg;
+                banner.classList.remove('hidden');
+            } else {
+                title.textContent = 'Complete!';
+                banner.classList.add('hidden');
+            }
 
+            const links = document.getElementById('downloadLinks');
+            links.innerHTML = '';
+
+            if (status.output_path) {
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}" download>Download Main CSV</a>`;
+            }
             if (status.stage1_path) {
-                downloadStage1Btn.href = `/download/${taskId}?stage=1`;
-                downloadStage1Btn.classList.remove('hidden');
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=1" download>Download Stage 1</a>`;
             }
             if (status.stage2_path) {
-                downloadStage2Btn.href = `/download/${taskId}?stage=2`;
-                downloadStage2Btn.classList.remove('hidden');
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=2" download>Download Stage 2</a>`;
+            }
+            if (status.vtt_path) {
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=vtt" download>Download Subtitles (VTT)</a>`;
+            }
+            if (!links.innerHTML) {
+                links.innerHTML = '<p style="color:#888;">No downloadable files were produced for this run.</p>';
             }
         }
 
         function showError(msg) {
-            progressSection.classList.add('hidden');
-            errorSection.classList.remove('hidden');
-            errorMessage.textContent = msg;
-            processBtn.disabled = false;
-            processBtn.querySelector('.btn-text').textContent = 'Start Processing';
-            processBtn.querySelector('.btn-loader').classList.add('hidden');
+            document.getElementById('progress').classList.add('hidden');
+            document.getElementById('result').classList.add('hidden');
+            document.getElementById('error').classList.remove('hidden');
+            document.getElementById('errorText').textContent = msg;
+            document.getElementById('startBtn').disabled = false;
         }
     </script>
 </body>
