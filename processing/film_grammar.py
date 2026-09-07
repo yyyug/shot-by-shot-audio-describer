@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as transforms
 from PIL import Image
 
 
@@ -255,6 +254,7 @@ def _center_crop_and_resize(
     top = (h - new_h) // 2
     img = img.crop((left, top, left + new_w, top + new_h))
     img = img.resize((target_size, target_size), Image.BICUBIC)
+    import torchvision.transforms as transforms
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -354,6 +354,7 @@ def predict_threads_real(
     vr = VideoReader(uri=video_path, ctx=cpu(0))
     fps = float(vr.get_avg_fps())
 
+    import torchvision.transforms as transforms
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
