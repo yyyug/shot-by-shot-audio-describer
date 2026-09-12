@@ -172,6 +172,12 @@ from processing.film_grammar import get_effective_shot_scale, select_prompt_vari
 from processing.character_recognizer import detect_faces, extract_face_embeddings, cluster_faces
 from processing.vtt_writer import write_vtt
 
+# Lazy import to mirror vlm_describer/llm_summarizer (also keeps the frozen
+# PyArmor builds from resolving a private module at import time).
+def _api_common():
+    import processing._api_common as m
+    return m
+
 
 class AppBridge:
     """Bridge between JavaScript frontend and Python backend."""
@@ -221,9 +227,9 @@ class AppBridge:
     def test_api(self, backend, api_key, openai_url=None, openai_model=None):
         """Send a tiny prompt through the selected backend; returns
         {"ok": bool, "message": str} for the UI."""
-        logger.info(f"API key test requested: backend={backend}")
+        logger.info(f"API key test requested: backend={backend} url={openai_url} model={openai_model}")
         ok, message = test_connection(api_key, backend, openai_url, openai_model)
-        logger.info(f"API key test result: ok={ok} - {message}")
+        logger.info(f"API key test result: url={openai_url} model={openai_model} ok={ok} - {message}")
         return {"ok": ok, "message": message}
 
     # Processing functions
@@ -333,6 +339,14 @@ class AppBridge:
                         "end": shot["end_time"],
                         "shot_ids": [shot["shot_id"]],
                     })
+            if not units:
+                logger.info(f"No shots detected; using full video as single unit ({video_duration:.1f}s)")
+                units.append({
+                    "unit_id": 1,
+                    "start": 0,
+                    "end": video_duration,
+                    "shot_ids": [],
+                })
             status["progress"] = 40
             self.emit_progress(task_id, status)
             logger.info(f"Built {len(units)} AD units")
@@ -358,12 +372,13 @@ class AppBridge:
                 self.emit_progress(task_id, status)
                 
                 descriptions_dict = {}
+                stage1_error_categories = {}
                 for i, unit in enumerate(units):
                     try:
                         logger.info(f"Processing unit {i+1}/{len(units)}...")
                         
                         frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-                        if use_context:
+                        if use_context and shots:
                             # Get context shots (2 before + current + 2 after)
                             context_shots = self._get_context_shots(shots, unit["shot_ids"])
                             status["detail"] = f"Describing unit {i+1}/{len(units)} with {len(context_shots)} context shots"
@@ -402,6 +417,9 @@ class AppBridge:
                         logger.error(f"Unit {i+1} failed: {e}", exc_info=True)
                         descriptions_dict[unit["unit_id"]] = ""
                         status["detail"] = f"Unit {i+1} failed: {str(e)[:50]}"
+                        if e is not None:
+                            cat = _api_common().categorize_error(e)
+                            stage1_error_categories[cat] = stage1_error_categories.get(cat, 0) + 1
                     
                     # Rate limit protection: wait between API calls
                     if i < len(units) - 1:
@@ -444,21 +462,19 @@ class AppBridge:
 
             if not options.get("skip_stage2") and api_key and descriptions_dict:
                 # Abort stage 2 when the majority of shots could not be
-                # described (almost always an exhausted free-tier quota). Keep
-                # the partial stage-1 CSV and say so clearly rather than
+                # described. Rather than blaming quota unconditionally, diagnose
+                # the actual cause from the errors collected during stage 1.
+                # Keep the partial stage-1 CSV and say so clearly rather than
                 # silently emitting an empty final file.
                 if len(units) > 0 and success_count / len(units) < 0.5:
                     status["status"] = "failed"
                     status["partial"] = True
-                    status["error"] = (
-                        f"API quota limit reached: only {success_count}/{len(units)} shots could be "
-                        f"described (full audio descriptions need ~{2 * len(units)} API calls). "
-                        "Stage 2 (AD summarization) was skipped, so final.csv and _AD.csv were NOT "
-                        "generated. The partial shot descriptions are saved in _DetailsDescription.csv. "
-                        "Free-tier daily quota resets at midnight Pacific Time. Consider a paid tier or "
-                        "a higher-quota model (e.g. a 2.x Flash model) to process this video."
+                    _ac = _api_common()
+                    dominant = _ac.dominant_category(stage1_error_categories)
+                    status["error"] = _ac.build_stage1_blocked_message(
+                        dominant, success_count, len(units)
                     )
-                    logger.warning(f"Aborting stage 2 - only {success_count}/{len(units)} shots succeeded (quota likely exhausted)")
+                    logger.warning(f"Aborting stage 2 - only {success_count}/{len(units)} shots succeeded (cause={dominant})")
                     self.emit_progress(task_id, status)
                 else:
                     status["step"] = "summarize"
@@ -468,7 +484,9 @@ class AppBridge:
 
                     stage2_results = batch_summarize(
                         stage1_results, api_key, backend=backend,
-                        video_type=options.get("video_type", "movie")
+                        video_type=options.get("video_type", "movie"),
+                        openai_url=options.get("openai_url"),
+                        openai_model=options.get("openai_model")
                     )
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
                     non_empty = sum(1 for v in ad_sentence_map.values() if str(v).strip())
@@ -507,7 +525,16 @@ class AppBridge:
 
         except Exception as e:
             status["status"] = "failed"
-            status["error"] = str(e)
+            # Stage-2 summarization failures bubble here; diagnose the real
+            # cause (auth/config/quota/network) instead of a bare string where
+            # possible, keeping stage-1 results as the recoverable artifact.
+            if status.get("step") == "summarize":
+                _ac = _api_common()
+                status["error"] = _ac.build_stage2_failed_message(
+                    _ac.categorize_error(e), _ac.quote_error_detail(e)
+                )
+            else:
+                status["error"] = str(e)
             logger.critical(
                 f"Processing FAILED at step={status.get('step')} progress={status.get('progress')}: {e}",
                 exc_info=True,

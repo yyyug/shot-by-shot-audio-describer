@@ -2,7 +2,7 @@
 # 1. Creates a fresh build venv (isolated, does not pollute system Python)
 # 2. Installs CPU-only PyTorch + dependencies + PyInstaller (+ PyArmor)
 # 3. (Optional) Obfuscates your source with PyArmor
-# 4. Builds a one-folder desktop app (dist\ShotByShotDesktop)
+# 4. Builds a one-folder app (dist\ShotByShotPortable)
 #    including bundled SenseVoice models
 # 5. If Inno Setup is installed, compiles a single-file UI installer
 #    (dist\ShotByShot-Setup.exe) with shortcuts + uninstaller.
@@ -90,12 +90,26 @@ Write-Step "Running PyInstaller (desktop + web versions - bundles ~1GB of models
     --workpath (Join-Path $Root "build") `
     (Join-Path $Root "packaging\ShotByShotDesktop.spec")
 if ($LASTEXITCODE -ne 0) { Write-Warn "PyInstaller build (desktop) failed."; exit 1 }
-Write-Ok "Built: $(Join-Path $Root 'dist\ShotByShotDesktop')"
+Write-Ok "Built: $(Join-Path $Root 'dist\ShotByShotPortable')"
+
+# ---------------------------------------------------------------- few-shot training data
+Write-Step "Bundling few-shot GT training data (stage2\gt_ad_train)..."
+$gtSrc = Join-Path $Root "stage2\gt_ad_train"
+$gtDst = Join-Path $Root "dist\ShotByShotPortable\_internal\stage2\gt_ad_train"
+if ((Test-Path $gtSrc) -and -not (Test-Path $gtDst)) {
+    New-Item -ItemType Directory -Path $gtDst -Force | Out-Null
+    Copy-Item (Join-Path $gtSrc "cmdad_train.csv") $gtDst -Force
+    Copy-Item (Join-Path $gtSrc "tvad_train.csv") $gtDst -Force
+    Copy-Item (Join-Path $gtSrc "madeval_train.csv") $gtDst -Force
+    Write-Ok "Copied GT training CSVs ($gtDst)"
+} else {
+    Write-Ok "GT training data present or source missing; skipped."
+}
 
 # ---------------------------------------------------------------- trim long paths
 Write-Step "Trimming deeply-nested third-party license files (avoids Inno long-path errors)..."
 $trimmed = 0
-Get-ChildItem (Join-Path $Root "dist\ShotByShotDesktop\_internal") -Directory -Recurse `
+Get-ChildItem (Join-Path $Root "dist\ShotByShotPortable\_internal") -Directory -Recurse `
     | Where-Object { $_.FullName -match "torch-[^\\]+\.dist-info\\licenses\\third_party$" } | ForEach-Object {
     Remove-Item $_.FullName -Recurse -Force
     $trimmed++
@@ -105,7 +119,7 @@ if ($trimmed -gt 0) { Write-Ok "Removed $trimmed license trees." }
 # ---------------------------------------------------------------- portable extras
 Write-Step "Adding portable extras (Outputs folder shortcut)..."
 $batSrc = Join-Path $Root "packaging\Shot-by-Shot Outputs.bat"
-Copy-Item $batSrc (Join-Path $Root "dist\ShotByShotDesktop") -Force
+Copy-Item $batSrc (Join-Path $Root "dist\ShotByShotPortable") -Force
 Write-Ok "Added 'Shot-by-Shot Outputs.bat' next to the exe."
 
 # ---------------------------------------------------------------- inno setup
@@ -128,7 +142,7 @@ if ($iscc) {
 } else {
     Write-Warn "Inno Setup not found - skipping installer step."
     Write-Warn "Download free Inno Setup 6 from https://jrsoftware.org/isinfo.php then re-run build.ps1"
-    Write-Warn "The one-folder build in dist\ShotByShotDesktop can be zipped and distributed as-is."
+    Write-Warn "The one-folder build in dist\ShotByShotPortable can be zipped and distributed as-is."
 }
 
 Write-Step "Done."

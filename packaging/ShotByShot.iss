@@ -35,7 +35,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "..\dist\ShotByShotDesktop\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\ShotByShotPortable\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Evergreen WebView2 Runtime bootstrapper (~2MB, needs network when run).
 ; Only executed on machines where the runtime is missing (fresh Win10 etc.).
 Source: "redist\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall

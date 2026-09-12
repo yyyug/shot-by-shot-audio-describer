@@ -162,6 +162,19 @@ def main():
                 "end": shot["end_time"],
                 "shot_ids": [shot["shot_id"]],
             })
+    if not units:
+        import cv2
+        cap = cv2.VideoCapture(args.video)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        end_t = (cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps) if fps > 0 else 0
+        cap.release()
+        print("  No shots detected; using full video as single unit")
+        units.append({
+            "unit_id": 1,
+            "start": 0,
+            "end": end_t,
+            "shot_ids": [],
+        })
 
     # Step 4: VLM description (Stage 1)
     descriptions_dict = {}

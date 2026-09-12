@@ -24,6 +24,12 @@ from processing.film_grammar import get_effective_shot_scale, select_prompt_vari
 from processing.character_recognizer import detect_faces, extract_face_embeddings, cluster_faces
 from processing.vtt_writer import write_vtt
 
+# Lazy import to mirror vlm_describer/llm_summarizer (also keeps the frozen
+# PyArmor builds from resolving a private module at import time).
+def _api_common():
+    import processing._api_common as m
+    return m
+
 # Resolve resource folders for both source and PyInstaller-frozen layouts.
 # Mirrors desktop.py exactly so both versions write outputs to the same place.
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -183,9 +189,17 @@ def _extract_frames_with_context(video_path, current_shot, context_shots):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     all_frames_b64 = []
+    parts = []
     for shot in context_shots:
         duration = shot["end_time"] - shot["start_time"]
         num_frames = calculate_num_frames(duration)
+        is_current = (
+            abs(shot.get("start_time", -1) - current_shot.get("start_time", 0)) < 1e-6
+            and abs(shot.get("end_time", -1) - current_shot.get("end_time", 0)) < 1e-6
+        )
+        parts.append(
+            f"{'current' if is_current else 'context'}=#{shot.get('shot_id')}({duration:.1f}s,{num_frames}f)"
+        )
         start_frame = int(shot["start_time"] * fps)
         end_frame = int(shot["end_time"] * fps)
         frame_indices = np.linspace(start_frame, end_frame, num_frames, dtype=int)
@@ -196,6 +210,9 @@ def _extract_frames_with_context(video_path, current_shot, context_shots):
                 _, buf = cv2.imencode('.jpg', frame)
                 all_frames_b64.append(base64.b64encode(buf).decode('utf-8'))
     cap.release()
+    logger.info("extract_frames_with_context: shot=%s duration=%.1fs frames=%d parts=[%s]",
+                current_shot.get("start_time"), current_shot["end_time"] - current_shot["start_time"],
+                len(all_frames_b64), ", ".join(parts))
     return all_frames_b64
 
 
@@ -274,6 +291,15 @@ def process_video_task(task_id, video_path, options):
                     "shot_ids": [shot["shot_id"]],
                     "mode": "shot",
                 })
+        if not units:
+            units.append({
+                "unit_id": 1,
+                "start": 0,
+                "end": video_duration,
+                "shot_ids": [],
+                "mode": "shot",
+            })
+            logger.info(f"Task {task_id}: no shots detected; using full-video as single unit ({video_duration:.1f}s)")
         status["detail"] = f"{len(units)} AD units to describe"
         status["progress"] = 40
         logger.info(f"Task {task_id}: built {len(units)} AD units")
@@ -292,11 +318,14 @@ def process_video_task(task_id, video_path, options):
             logger.info(f"Task {task_id}: VLM descriptions begin - {len(units)} units, backend={backend}, context={bool(options.get('use_context_extender'))}")
             shot_scales = [2] * len(shots)
             threads = [[j for j in range(len(shots))]]
+            stage1_error_categories = {}
+            stage1_usage = _api_common().TokenUsage()
+            stage2_usage = _api_common().TokenUsage()
             for i, unit in enumerate(units):
                 try:
                     logger.info(f"Task {task_id}: unit {i+1}/{len(units)} ({unit.get('mode', 'shot')})")
                     frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-                    if options.get("use_context_extender"):
+                    if options.get("use_context_extender") and shots:
                         context_shots = _get_context_shots(shots, unit["shot_ids"])
                         frames_b64 = _extract_frames_with_context(video_path, frame_shot, context_shots)
                     else:
@@ -309,7 +338,8 @@ def process_video_task(task_id, video_path, options):
                     logger.info(f"Task {task_id}: calling API for unit {i+1} ({len(frames_b64)} frames)")
                     desc = describe_frames(frames_b64, api_key, backend=backend, film_grammar=film_grammar,
                                            openai_url=options.get("openai_url"),
-                                           openai_model=options.get("openai_model"))
+                                           openai_model=options.get("openai_model"),
+                                           usage_acc=stage1_usage)
                     descriptions_dict[unit["unit_id"]] = desc
                     logger.info(f"Task {task_id}: unit {i+1} completed ({len(desc)} chars)")
                     status["detail"] = f"Described unit {i+1}/{len(units)}"
@@ -317,12 +347,17 @@ def process_video_task(task_id, video_path, options):
                     descriptions_dict[unit["unit_id"]] = ""
                     status["detail"] = f"Unit {i+1} failed: {str(e)[:50]}"
                     logger.error(f"Task {task_id}: unit {i+1}/{len(units)} failed: {e}", exc_info=True)
+                    if e is not None:
+                        cat = _api_common().categorize_error(e)
+                        stage1_error_categories[cat] = stage1_error_categories.get(cat, 0) + 1
                 # Rate limit protection: stay under ~15 RPM
                 if i < len(units) - 1:
                     time.sleep(3)
                 status["progress"] = 50 + int((i/len(units))*20)
         status["detail"] = f"Described {len(descriptions_dict)} units"
         status["progress"] = 80
+        if stage1_usage.calls:
+            logger.info(f"Task {task_id}: Stage 1 token usage: {stage1_usage.summary()}")
 
         # Stage-1 results are always persisted when there is anything to keep:
         # some shots may have succeeded even when the API quota ran out, and the
@@ -341,29 +376,34 @@ def process_video_task(task_id, video_path, options):
 
         ad_sentence_map = {}
         if not options.get("skip_stage2") and api_key and descriptions_dict:
-            # Abort stage 2 when the majority of shots could not be described
+            # Abort stage 2 when the majority of shots could not be described.
+            # Only the message wording (and text) mentions quota - the actual
+            # cause could be auth/config/network, which we now diagnose from
+            # the errors collected during stage 1.
             if len(units) > 0 and success_count / len(units) < 0.5:
                 status["status"] = "failed"
                 status["partial"] = True
-                status["error"] = (
-                    f"API quota limit reached: only {success_count}/{len(units)} shots could be "
-                    f"described (full audio descriptions need ~{2 * len(units)} API calls). "
-                    "Stage 2 (AD summarization) was skipped, so final.csv and _AD.csv were NOT "
-                    "generated. The partial shot descriptions are saved in _DetailsDescription.csv. "
-                    "Free-tier daily quota resets at midnight Pacific Time. Consider a paid tier or "
-                    "a higher-quota model (e.g. a 2.x Flash model) to process this video."
+                _ac = _api_common()
+                dominant = _ac.dominant_category(stage1_error_categories)
+                status["error"] = _ac.build_stage1_blocked_message(
+                    dominant, success_count, len(units)
                 )
-                logger.warning(f"Task {task_id}: aborting stage 2 - only {success_count}/{len(units)} shots succeeded (quota likely exhausted)")
+                logger.warning(f"Task {task_id}: aborting stage 2 - only {success_count}/{len(units)} shots succeeded (cause={dominant})")
             else:
                 status["step"] = "stage2_summarize"
                 status["detail"] = "Summarizing audio descriptions..."
                 logger.info(f"Task {task_id}: stage 2 summarization begin")
                 try:
                     stage2_results = batch_summarize(stage1_results, api_key, backend=backend,
-                                                    video_type=options.get("video_type", "movie"))
+                                                video_type=options.get("video_type", "movie"),
+                                                openai_url=options.get("openai_url"),
+                                                openai_model=options.get("openai_model"),
+                                                usage_acc=stage2_usage)
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
                     non_empty = sum(1 for v in ad_sentence_map.values() if str(v).strip())
                     logger.info(f"Task {task_id}: stage 2 produced {non_empty}/{len(ad_sentence_map)} non-empty AD sentences")
+                    grand = stage1_usage.total() + stage2_usage.total()
+                    logger.info(f"Task {task_id}: token usage totals: stage1=[{stage1_usage.summary()}] stage2=[{stage2_usage.summary()}] grand_total={grand}")
                     # Same naming scheme and folder as the desktop version so the
                     # "Outputs" shortcut shows results from both versions.
                     pd.DataFrame(stage2_results).to_csv(os.path.join(DATA_DIR, f"{timestamp}_AD.csv"), index=False, encoding="utf-8-sig")
@@ -392,18 +432,19 @@ def process_video_task(task_id, video_path, options):
                     except OSError:
                         pass
                 except Exception as stage2_err:
-                    # Stage 2 failed (e.g. API quota exhausted mid-run). Stage-1
+                    # Stage 2 failed (e.g. API quota exhausted mid-run, or an
+                    # auth/config/network problem). Diagnose the actual cause
+                    # instead of always blaming free-tier quota. Stage-1
                     # results are already saved, so keep them downloadable and
                     # mark the run as failed with a clear message.
+                    _ac = _api_common()
                     status["status"] = "failed"
-                    status["error"] = (
-                        f"Stage 2 (AD summarization) failed: {stage2_err} "
-                        "The stage-1 shot descriptions were saved and can be downloaded above. "
-                        "Free-tier Gemini daily quota may have been exhausted; it resets at "
-                        "midnight Pacific Time."
+                    category = _ac.categorize_error(stage2_err)
+                    status["error"] = _ac.build_stage2_failed_message(
+                        category, _ac.quote_error_detail(stage2_err)
                     )
                     status["partial"] = True
-                    logger.error(f"Task {task_id}: stage 2 failed but stage-1 results kept: {stage2_err}")
+                    logger.error(f"Task {task_id}: stage 2 failed (cause={category}) but stage-1 results kept: {stage2_err}")
         else:
             # No API key or stage 2 explicitly skipped: only stage-1 CSV exists.
             status["status"] = "completed"
@@ -430,7 +471,7 @@ def test_api_route():
         data.get("openai_url"),
         data.get("openai_model"),
     )
-    logger.info(f"API key test: backend={data.get('backend')} ok={ok} - {message}")
+    logger.info(f"API key test: backend={data.get('backend')} url={data.get('openai_url')} model={data.get('openai_model')} ok={ok} - {message}")
     return jsonify({"ok": ok, "message": message})
 
 

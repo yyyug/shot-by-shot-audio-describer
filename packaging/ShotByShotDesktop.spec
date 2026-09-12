@@ -15,6 +15,7 @@
 # Usage: pyinstaller packaging\ShotByShotDesktop.spec
 
 import os
+import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
@@ -29,6 +30,7 @@ WEB_PATH = [os.path.dirname(WEB_ENTRY), PROJECT_ROOT]
 # desktop.py / webapp_entry.py / processing/* must be listed here.
 COMMON_HIDDEN = [
     "processing",
+    "processing._api_common",
     "processing.shot_detector",
     "processing.sensevoice_transcriber",
     "processing.dialogue_gap_detector",
@@ -91,11 +93,24 @@ EXCLUDES = [
     "PySide6",
 ]
 
+# Few-shot ground-truth AD examples used by processing/llm_summarizer at
+# runtime (resolved relative to the processing module as ../stage2/gt_ad_train).
+GT_TRAIN_SRC = os.path.join(PROJECT_ROOT, "stage2", "gt_ad_train")
+GT_TRAIN_DATA = [
+    (os.path.join(GT_TRAIN_SRC, "cmdad_train.csv"), os.path.join("stage2", "gt_ad_train")),
+    (os.path.join(GT_TRAIN_SRC, "tvad_train.csv"), os.path.join("stage2", "gt_ad_train")),
+    (os.path.join(GT_TRAIN_SRC, "madeval_train.csv"), os.path.join("stage2", "gt_ad_train")),
+]
+
 DATA = [
     (os.path.join(PROJECT_ROOT, "templates"), "templates"),
     (os.path.join(PROJECT_ROOT, "static"), "static"),
     (os.path.join(PROJECT_ROOT, "models", "sensevoice"), os.path.join("models", "sensevoice")),
-]
+    # funasr reads version.txt from its own package dir at import time
+    # (funasr/__init__.py); PyInstaller does not ship data files from
+    # site-packages automatically, so bundle it explicitly.
+    (os.path.join(sys.prefix, "Lib", "site-packages", "funasr", "version.txt"), os.path.join("funasr")),
+] + GT_TRAIN_DATA
 
 a = Analysis(
     [DESKTOP_ENTRY],
@@ -188,5 +203,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="ShotByShotDesktop",
+    name="ShotByShotPortable",
 )

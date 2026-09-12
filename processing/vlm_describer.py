@@ -72,7 +72,7 @@ def _build_prompt(frames_base64, prompt, film_grammar):
     return prompt
 
 
-def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0):
+def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0, usage_acc=None):
     """Call Gemini API using google-genai library.
 
     Shares the pause-on-quota / provider-backoff / 401-give-up behaviour with
@@ -115,6 +115,8 @@ def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_r
             logger.info(f"Gemini API attempt {attempt+1}/{max_retries}...")
             response = client.models.generate_content(model=model, contents=content, config=config)
             result = response.text.strip() if response.text else ""
+            if usage_acc is not None:
+                usage_acc.add(getattr(response, "usage_metadata", None))
             logger.info(f"Gemini API success: {len(result)} chars")
             return result
         except Exception as e:
@@ -134,9 +136,15 @@ def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_r
             raise RuntimeError(f"Gemini API failed: {e}")
 
 
-def _call_openrouter(frames_base64, api_key, prompt, model="qwen/qwen3.7-plus", max_retries=3, retry_delay=1.0):
+def _call_openrouter(frames_base64, api_key, prompt, model="qwen/qwen3.7-plus", max_retries=3, retry_delay=1.0, usage_acc=None):
     """Call OpenRouter API."""
     common = _get_api_common()
+    MAX_IMAGES = 600
+    if len(frames_base64) > MAX_IMAGES:
+        import numpy as _np
+        idxs = set(_np.linspace(0, len(frames_base64) - 1, MAX_IMAGES, dtype=int))
+        frames_base64 = [f for i, f in enumerate(frames_base64) if i in idxs]
+        logger.info(f"OpenRouter API: capped frames to {len(frames_base64)} (provider limit {MAX_IMAGES})")
     content = [{"type": "text", "text": prompt}]
     for frame_b64 in frames_base64:
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"}})
@@ -144,19 +152,27 @@ def _call_openrouter(frames_base64, api_key, prompt, model="qwen/qwen3.7-plus", 
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
-        "max_tokens": 512
+        "max_tokens": 8192
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
+    logger.info(f"OpenRouter API: url={OPENROUTER_API_URL}, model={model}, frames={len(frames_base64)}")
     for attempt in range(max_retries):
         try:
             common.wait_if_paused()
+            logger.info(f"OpenRouter API attempt {attempt+1}/{max_retries} -> POST {OPENROUTER_API_URL} (model={model})")
             response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+            data = response.json()
+            if usage_acc is not None:
+                usage_acc.add(data.get("usage"))
+            return data["choices"][0]["message"]["content"] or ""
         except requests.exceptions.RequestException as e:
             status = common.extract_status(e)
-            logger.error(f"OpenRouter API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
+            logger.error(f"OpenRouter API attempt {attempt+1} failed (status={status or 'n/a'}) url={OPENROUTER_API_URL} model={model}: {e}")
+            body = common.response_body(e)
+            if body:
+                logger.error(f"OpenRouter API response body: {body}")
             if common.classify_crisis(status):
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
@@ -170,9 +186,18 @@ def _call_openrouter(frames_base64, api_key, prompt, model="qwen/qwen3.7-plus", 
             raise RuntimeError(f"OpenRouter API failed: {e}")
 
 
-def _call_openai(frames_base64, api_key, prompt, model="gpt-latest", max_retries=3, retry_delay=1.0, base_url=None):
+def _call_openai(frames_base64, api_key, prompt, model="gpt-latest", max_retries=3, retry_delay=1.0, base_url=None, usage_acc=None):
     """Call OpenAI-compatible API."""
     common = _get_api_common()
+    # Most providers cap images per request (DeepSeek allows up to 600). If a
+    # unit produced more frames than the cap, keep even temporal coverage by
+    # subsampling instead of sending every frame and getting a 400.
+    MAX_IMAGES = 600
+    if len(frames_base64) > MAX_IMAGES:
+        import numpy as _np
+        idxs = set(_np.linspace(0, len(frames_base64) - 1, MAX_IMAGES, dtype=int))
+        frames_base64 = [f for i, f in enumerate(frames_base64) if i in idxs]
+        logger.info(f"OpenAI API: capped frames to {len(frames_base64)} (provider limit {MAX_IMAGES})")
     content = [{"type": "text", "text": prompt}]
     for frame_b64 in frames_base64:
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}", "detail": "low"}})
@@ -180,21 +205,31 @@ def _call_openai(frames_base64, api_key, prompt, model="gpt-latest", max_retries
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
-        "max_tokens": 512
+        "max_tokens": 8192
     }
+    # Reasoning-mode models (DeepSeek V4 thinking by default, QwQ, etc.) share
+    # the max_tokens budget between chain-of-thought and the final answer; a
+    # tiny cap gets burned on reasoning and content comes back empty (HTTP 200).
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
     url = f"{base_url}/chat/completions" if base_url else OPENAI_API_URL
+    logger.info(f"OpenAI API: url={url}, model={model}, frames={len(frames_base64)}, prompt_len={len(prompt)}")
 
     for attempt in range(max_retries):
         try:
             common.wait_if_paused()
+            logger.info(f"OpenAI API attempt {attempt+1}/{max_retries} -> POST {url} (model={model})")
             response = requests.post(url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+            data = response.json()
+            if usage_acc is not None:
+                usage_acc.add(data.get("usage"))
+            return data["choices"][0]["message"]["content"] or ""
         except requests.exceptions.RequestException as e:
             status = common.extract_status(e)
-            logger.error(f"OpenAI API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
+            logger.error(f"OpenAI API attempt {attempt+1} failed (status={status or 'n/a'}) url={url} model={model}: {e}")
+            body = common.response_body(e)
+            if body:
+                logger.error(f"OpenAI API response body: {body}")
             if common.classify_crisis(status):
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
@@ -218,7 +253,8 @@ def describe_frames(
     max_retries: int = 3,
     retry_delay: float = 1.0,
     openai_url: str = None,
-    openai_model: str = None
+    openai_model: str = None,
+    usage_acc=None
 ) -> str:
     """
     Describe video frames using specified backend.
@@ -245,11 +281,11 @@ def describe_frames(
     
     if backend.startswith("gemini"):
         model = backend  # Use the full model name from dropdown
-        return _call_gemini(frames_base64, api_key, prompt, model, max_retries, retry_delay)
+        return _call_gemini(frames_base64, api_key, prompt, model, max_retries, retry_delay, usage_acc=usage_acc)
     elif backend == "openrouter":
-        return _call_openrouter(frames_base64, api_key, prompt, max_retries=max_retries, retry_delay=retry_delay)
+        return _call_openrouter(frames_base64, api_key, prompt, max_retries=max_retries, retry_delay=retry_delay, usage_acc=usage_acc)
     elif backend == "openai-compatible":
         model = openai_model or "gpt-4o"
-        return _call_openai(frames_base64, api_key, prompt, model, max_retries, retry_delay, base_url=openai_url)
+        return _call_openai(frames_base64, api_key, prompt, model, max_retries, retry_delay, base_url=openai_url, usage_acc=usage_acc)
     else:
         raise ValueError(f"Unknown backend: {backend}")

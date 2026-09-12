@@ -98,7 +98,7 @@ def sample_few_shot_examples(video_type: str, duration_seconds: float, num_examp
     return [examples[i] for i in sampled_indices]
 
 
-def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0):
+def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0, usage_acc=None):
     """Call Gemini API using google-genai library.
 
     Uses the shared API helpers: on a 429/401/403 it pauses every worker on
@@ -120,7 +120,10 @@ def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry
             # before we touch the API again.
             common.wait_if_paused()
             response = client.models.generate_content(model=model, contents=prompt)
-            return response.text.strip()
+            result = response.text.strip() if response.text else ""
+            if usage_acc is not None:
+                usage_acc.add(getattr(response, "usage_metadata", None))
+            return result
         except Exception as e:
             status = common.extract_status(e)
             logger.warning(f"Gemini API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
@@ -145,25 +148,33 @@ def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry
             raise RuntimeError(f"Gemini API failed: {e}")
 
 
-def _call_openrouter(prompt, api_key, model="qwen/qwen3.7-plus", max_retries=3, retry_delay=1.0):
+def _call_openrouter(prompt, api_key, model="qwen/qwen3.7-plus", max_retries=3, retry_delay=1.0, usage_acc=None):
     """Call OpenRouter API."""
     common = _get_api_common()
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 256,
+        "max_tokens": 4096,
         "temperature": 0.6
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    logger.info(f"OpenRouter API: url={OPENROUTER_API_URL}, model={model}")
     for attempt in range(max_retries):
         try:
             common.wait_if_paused()
+            logger.info(f"OpenRouter API attempt {attempt+1}/{max_retries} -> POST {OPENROUTER_API_URL} (model={model})")
             response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"].strip()
+            data = response.json()
+            if usage_acc is not None:
+                usage_acc.add(data.get("usage"))
+            return (data["choices"][0]["message"]["content"] or "").strip()
         except requests.exceptions.RequestException as e:
             status = common.extract_status(e)
-            logger.warning(f"OpenRouter API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
+            logger.warning(f"OpenRouter API attempt {attempt+1} failed (status={status or 'n/a'}) url={OPENROUTER_API_URL} model={model}: {e}")
+            body = common.response_body(e)
+            if body:
+                logger.warning(f"OpenRouter API response body: {body}")
             if common.classify_crisis(status):
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
@@ -177,25 +188,37 @@ def _call_openrouter(prompt, api_key, model="qwen/qwen3.7-plus", max_retries=3, 
             raise RuntimeError(f"OpenRouter API failed: {e}")
 
 
-def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay=1.0):
-    """Call OpenAI API."""
+def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay=1.0, base_url=None, usage_acc=None):
+    """Call OpenAI-compatible API."""
     common = _get_api_common()
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 256,
+        "max_tokens": 4096,
         "temperature": 0.6
     }
+    # Reasoning-mode models (DeepSeek V4 thinking by default, QwQ, etc.) share
+    # the max_tokens budget between chain-of-thought and the final answer; give
+    # them room so message.content isn't left empty (HTTP 200).
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    url = f"{base_url}/chat/completions" if base_url else OPENAI_API_URL
+    logger.info(f"OpenAI API: url={url}, model={model}")
     for attempt in range(max_retries):
         try:
             common.wait_if_paused()
-            response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=60)
+            logger.info(f"OpenAI API attempt {attempt+1}/{max_retries} -> POST {url} (model={model})")
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"].strip()
+            data = response.json()
+            if usage_acc is not None:
+                usage_acc.add(data.get("usage"))
+            return (data["choices"][0]["message"]["content"] or "").strip()
         except requests.exceptions.RequestException as e:
             status = common.extract_status(e)
-            logger.warning(f"OpenAI API attempt {attempt+1} failed (status={status or 'n/a'}): {e}")
+            logger.warning(f"OpenAI API attempt {attempt+1} failed (status={status or 'n/a'}) url={url} model={model}: {e}")
+            body = common.response_body(e)
+            if body:
+                logger.warning(f"OpenAI API response body: {body}")
             if common.classify_crisis(status):
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
@@ -291,15 +314,49 @@ def test_connection(api_key, backend="gemini-3.7-flash", openai_url=None, openai
         resp = requests.post(
             url,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 10},
+            # Reasoning-style models (DeepSeek V4 thinking, QwQ, etc.) spend
+            # part of max_tokens on reasoning before emitting content; a tiny
+            # budget gets burned on `reasoning_content` and `content` comes back
+            # empty (HTTP 200). Give it enough room.
+            json={"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 800},
             timeout=25,
         )
+        logger.info(f"Test connection -> {backend} POST {url} (model={model})")
         if resp.status_code != 200:
-            return False, f"HTTP {resp.status_code} - {_http_error_hint(resp.status_code)} | {resp.text[:150]}"
-        content = (resp.json()["choices"][0]["message"]["content"] or "").strip()
-        if not content:
-            return False, "HTTP 200 but the model returned empty content"
-        return True, f"Connection OK - {model} replied: {content[:50]}"
+            body = _get_api_common().response_body(resp, limit=500)
+            body_suffix = f" | {body}" if body else ""
+            return False, f"HTTP {resp.status_code} - {_http_error_hint(resp.status_code)}{body_suffix}"
+        try:
+            data = resp.json()
+        except ValueError:
+            return False, "HTTP 200 but the response body was not valid JSON"
+        if not isinstance(data, dict):
+            return False, "HTTP 200 but the response did not contain a JSON object"
+        choices = data.get("choices") or []
+        if not choices:
+            error = data.get("error")
+            if error:
+                return False, f"Endpoint returned an error: {str(error)[:200]}"
+            return False, "HTTP 200 but the response contained no choices"
+        message = choices[0].get("message") or {}
+        content = str(message.get("content") or "").strip()
+        if content:
+            return True, f"Connection OK - {model} replied: {content[:50]}"
+        # Reasoning models may answer entirely inside `reasoning_content` and
+        # leave the final `content` empty for a tiny prompt; the connection,
+        # key and model are all fine in that case.
+        reasoning = str(
+            message.get("reasoning_content") or message.get("reasoning") or ""
+        ).strip()
+        if reasoning:
+            return True, (
+                f"Connection OK - {model} responded (received reasoning text, "
+                "no final content for this tiny prompt)"
+            )
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason == "length":
+            return False, "HTTP 200 but the response was cut off (finish_reason=length) - try a model with a longer output budget"
+        return False, "HTTP 200 but the model returned empty content"
 
     except requests.exceptions.Timeout:
         return False, "Timeout - server did not respond within 25s"
@@ -323,7 +380,10 @@ def summarize_to_ad(
     examples: List[str] = None,
     mode: str = "single",
     max_retries: int = 3,
-    retry_delay: float = 1.0
+    retry_delay: float = 1.0,
+    openai_url: str = None,
+    openai_model: str = None,
+    usage_acc=None
 ) -> str:
     """Summarize Stage 1 description into concise AD sentence."""
     if not stage1_description:
@@ -345,13 +405,13 @@ def summarize_to_ad(
     
     if backend.startswith("gemini"):
         model = backend  # Use the full model name from dropdown
-        ad_text = _call_gemini(prompt, api_key, model, max_retries, retry_delay)
+        ad_text = _call_gemini(prompt, api_key, model, max_retries, retry_delay, usage_acc=usage_acc)
     elif backend == "openrouter":
         model = model or "qwen/qwen3.7-plus"
-        ad_text = _call_openrouter(prompt, api_key, model, max_retries, retry_delay)
+        ad_text = _call_openrouter(prompt, api_key, model, max_retries, retry_delay, usage_acc=usage_acc)
     elif backend in ("openai", "openai-compatible"):
-        model = model or "gpt-latest"
-        ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay)
+        model = openai_model or model or "gpt-latest"
+        ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay, base_url=openai_url, usage_acc=usage_acc)
     else:
         raise ValueError(f"Unknown backend: {backend}")
     
@@ -362,17 +422,22 @@ def summarize_to_ad(
 
 
 def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str = "gemini", 
-                    video_type: str = "movie", examples: List[str] = None) -> List[dict]:
+                    video_type: str = "movie", examples: List[str] = None,
+                    openai_url: str = None, openai_model: str = None,
+                    usage_acc=None) -> List[dict]:
     """Batch summarize multiple Stage 1 descriptions."""
     results = []
     for item in stage1_descriptions:
         duration = item["end"] - item["start"]
         try:
             ad_sentence = summarize_to_ad(item["description"], api_key, backend, 
-                                         duration_seconds=duration, video_type=video_type, examples=examples)
+                                         duration_seconds=duration, video_type=video_type, examples=examples,
+                                         openai_url=openai_url, openai_model=openai_model, usage_acc=usage_acc)
         except Exception as e:
             logger.warning(f"summarize_to_ad failed for shot {item['shot_id']}: {e}", exc_info=True)
             ad_sentence = ""
         results.append({"shot_id": item["shot_id"], "start": item["start"], 
                        "end": item["end"], "ad_sentence": ad_sentence})
+    if usage_acc is not None:
+        logger.info(f"Stage 2 token usage: {usage_acc.summary()}")
     return results
