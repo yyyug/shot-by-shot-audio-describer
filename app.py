@@ -359,6 +359,11 @@ def process_video_task(task_id, video_path, options):
         if stage1_usage.calls:
             logger.info(f"Task {task_id}: Stage 1 token usage: {stage1_usage.summary()}")
 
+        token_usage_status = {}
+        if stage1_usage.calls:
+            token_usage_status["stage1"] = stage1_usage.fields()
+        status["token_usage"] = token_usage_status or None
+
         # Stage-1 results are always persisted when there is anything to keep:
         # some shots may have succeeded even when the API quota ran out, and the
         # user explicitly wants those partial descriptions preserved.
@@ -404,6 +409,10 @@ def process_video_task(task_id, video_path, options):
                     logger.info(f"Task {task_id}: stage 2 produced {non_empty}/{len(ad_sentence_map)} non-empty AD sentences")
                     grand = stage1_usage.total() + stage2_usage.total()
                     logger.info(f"Task {task_id}: token usage totals: stage1=[{stage1_usage.summary()}] stage2=[{stage2_usage.summary()}] grand_total={grand}")
+                    if stage2_usage.calls:
+                        token_usage_status["stage2"] = stage2_usage.fields()
+                    token_usage_status["grand_total"] = grand
+                    status["token_usage"] = token_usage_status or None
                     # Same naming scheme and folder as the desktop version so the
                     # "Outputs" shortcut shows results from both versions.
                     pd.DataFrame(stage2_results).to_csv(os.path.join(DATA_DIR, f"{timestamp}_AD.csv"), index=False, encoding="utf-8-sig")

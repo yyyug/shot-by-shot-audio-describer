@@ -659,6 +659,17 @@ def main():
     # Read HTML content
     with open(html_path, 'r', encoding='utf-8') as f:
         html_content = f.read()
+
+    # Load translations.js inline: the HTML is handed to pywebview as a raw
+    # string whose base URL does not resolve /static/ assets. Keep the runtime
+    # identifier consistent with the web version so both share one i18n source.
+    i18n_path = os.path.join(BASE_DIR, "static", "translations.js")
+    if os.path.exists(i18n_path):
+        with open(i18n_path, 'r', encoding='utf-8') as f:
+            i18n_js = f.read()
+        # Insert before the page's own <script> so I18N is defined first.
+        html_content = html_content.replace(
+            "<script>", f"<script>\n{i18n_js}\n</script>\n<script>", 1)
     
     # Create window with HTML content
     window = webview.create_window(

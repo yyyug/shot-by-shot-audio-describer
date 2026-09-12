@@ -69,6 +69,7 @@ def smoke_test(model_dir, vad_dir):
             vad_model=vad_dir,
             vad_kwargs={"max_single_segment_time": 30000},
             device="cpu",
+            quantize=True,
         )
         res = model.generate(input=tmp.name, cache={}, language="auto", use_itn=True)
         log(f"Smoke test OK (result: {str(res)[:120]})")

@@ -134,6 +134,7 @@ def transcribe_video(
         vad_model=vad_model,
         vad_kwargs={"max_single_segment_time": 30000},
         device=device,
+        quantize=os.environ.get("SENSEVOICE_QUANTIZE", "1") not in ("0", "false", "False"),
     )
 
     if callback:

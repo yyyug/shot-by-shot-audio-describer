@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shot-by-Shot Audio Describer</title>
+    <title data-i18n="appTitle">BuddyAD</title>
     <link rel="stylesheet" href="/static/style.css">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -44,22 +44,25 @@
 </head>
 <body>
     <div class="container">
-        <h1>Shot-by-Shot Video Processor</h1>
+        <div style="text-align:right; margin-bottom:10px;">
+            <button type="button" id="langToggle" style="width:auto; padding:6px 14px; margin:0; font-size:13px;"></button>
+        </div>
+        <h1 data-i18n="appTitle">BuddyAD</h1>
 
         <form id="uploadForm">
             <!-- Video file -->
             <div class="form-group">
-                <label>Video File:</label>
+                <label data-i18n="videoFile">Video File:</label>
                 <div class="file-select">
                     <input type="text" id="videoPathDisplay" readonly value="" style="background: #f9f9f9;">
-                    <button type="button" id="selectFileBtn">Select File</button>
+                    <button type="button" id="selectFileBtn" data-i18n="selectFile">Select File</button>
                 </div>
                 <input type="file" id="videoFile" accept="video/*">
             </div>
 
             <!-- LLM -->
             <div class="form-group">
-                <label for="backend">LLM:</label>
+                <label for="backend" data-i18n="llm">LLM:</label>
                 <select id="backend" name="backend">
                     <option value="gemini-3.7-flash" selected>Gemini 3.7 Flash</option>
                     <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
@@ -69,24 +72,24 @@
 
             <!-- Gemini API Key -->
             <div class="form-group" id="geminiKeyGroup">
-                <label for="apiKey">Gemini API Key:</label>
+                <label for="apiKey" data-i18n="geminiKey">Gemini API Key:</label>
                 <div class="key-row">
                     <input type="password" id="apiKey" name="apiKey">
-                    <button type="button" id="testKeyBtnMain">Test</button>
+                    <button type="button" id="testKeyBtnMain" data-i18n="test">Test</button>
                 </div>
                 <span id="testResultMain" class="test-result"></span>
             </div>
 
             <!-- OpenAI Compatible Settings (hidden by default) -->
             <div class="form-group hidden" id="openaiCompatibleGroup">
-                <label for="openaiUrl">API Base URL:</label>
+                <label for="openaiUrl" data-i18n="apiBaseUrl">API Base URL:</label>
                 <input type="text" id="openaiUrl" name="openaiUrl" value="https://api.openai.com/v1">
-                <label for="openaiModel" style="margin-top: 8px;">Model Name:</label>
+                <label for="openaiModel" style="margin-top: 8px;" data-i18n="modelName">Model Name:</label>
                 <input type="text" id="openaiModel" name="openaiModel" value="gpt-4o">
-                <label for="openaiApiKey" style="margin-top: 8px;">API Key:</label>
+                <label for="openaiApiKey" style="margin-top: 8px;" data-i18n="apiKey">API Key:</label>
                 <div class="key-row">
                     <input type="password" id="openaiApiKey" name="openaiApiKey">
-                    <button type="button" id="testKeyBtnOpenAI">Test</button>
+                    <button type="button" id="testKeyBtnOpenAI" data-i18n="test">Test</button>
                 </div>
                 <span id="testResultOpenAI" class="test-result"></span>
             </div>
@@ -94,65 +97,73 @@
             <!-- Checkboxes -->
             <div class="form-group checkbox">
                 <input type="checkbox" id="useWhisper" name="useWhisper" checked>
-                <label for="useWhisper">Enable dialogue gap detection</label>
+                <label for="useWhisper" data-i18n="enableGap">Enable dialogue gap detection</label>
             </div>
             <div class="form-group checkbox">
                 <input type="checkbox" id="useContextExtender" name="useContextExtender">
-                <label for="useContextExtender">Extend AD intervals with past/future shot context</label>
+                <label for="useContextExtender" data-i18n="useContext">Using multi-shot context to improve AD continuity</label>
             </div>
 
             <!-- Video type -->
             <div class="form-group">
-                <label for="videoType">Video Type:</label>
+                <label for="videoType" data-i18n="videoType">Video Type:</label>
                 <select id="videoType" name="videoType">
-                    <option value="movie">Movie</option>
-                    <option value="tv_series">TV Series</option>
-                    <option value="stage_performance">Stage Performance</option>
-                    <option value="custom">Custom</option>
+                    <option value="movie" data-i18n="optMovie">Movie</option>
+                    <option value="tv_series" data-i18n="optTv">TV Series</option>
+                    <option value="stage_performance" data-i18n="optStage">Stage Performance</option>
+                    <option value="custom" data-i18n="optCustom">Custom</option>
                 </select>
             </div>
             <div class="form-group" id="customPromptGroup" style="display: none;">
-                <label for="customPrompt">Custom opening prompt:</label>
+                <label for="customPrompt" data-i18n="customPrompt">Custom prompt:</label>
                 <textarea id="customPrompt" name="customPrompt" rows="5"
                     style="width:100%; font-family:inherit;">Please watch the following video, pay extra attention to describing the color palette, lighting, and camera work.</textarea>
-                <p style="color:#888; font-size:12px; margin-top:4px;">
+                <p style="color:#888; font-size:12px; margin-top:4px;" data-i18n="customPromptNote">
                     This replaces the first opening sentence. The "Where different shot numbers are labelled..."
                     sentence and the rest of the description template are kept as-is.
                 </p>
             </div>
 
-            <button type="submit" id="startBtn">Start</button>
+            <button type="submit" id="startBtn" data-i18n="start">Start</button>
         </form>
 
         <!-- Progress -->
         <div id="progress" class="progress hidden">
-            <h3>Processing...</h3>
+            <h3 data-i18n="processing">Processing...</h3>
             <div class="progress-bar">
                 <div id="progressFill" class="progress-fill"></div>
             </div>
-            <p id="progressText">Initializing...</p>
+            <p id="progressText" data-i18n="initializing">Initializing...</p>
             <p id="progressDetail" style="color: #888; font-size: 12px;"></p>
         </div>
 
         <!-- Results (also used on failure when some files were still produced) -->
         <div id="result" class="result hidden">
-            <h3 id="resultTitle">Complete!</h3>
+            <h3 id="resultTitle" data-i18n="completed">Complete!</h3>
             <div id="resultBanner" class="hidden" style="margin: 12px 0; padding: 10px 14px; border-radius: 6px; color: #721c24; background: #f8d7da; border: 1px solid #f5c6cb;"></div>
             <div id="downloadLinks"></div>
-            <button type="button" id="resetBtn" style="margin-top: 10px;">Process Another Video</button>
+            <div id="usageBox" class="hidden" style="margin-top: 14px; padding-top: 10px; border-top: 1px dashed #ccc;">
+                <h4 style="margin-bottom: 6px; color: #333;" data-i18n="tokenUsage">Token usage</h4>
+                <p id="usageText" style="color: #555; font-size: 13px; line-height: 1.7;"></p>
+            </div>
+            <button type="button" id="resetBtn" style="margin-top: 10px;" data-i18n="another">Process Another Video</button>
         </div>
 
         <!-- Error (pre-processing / connection failures, before any task runs) -->
         <div id="error" class="error hidden">
-            <h3>Error</h3>
+            <h3 data-i18n="errorTitle">Error</h3>
             <p id="errorText"></p>
         </div>
     </div>
 
+    <script src="/static/translations.js"></script>
     <script>
         const videoFile = document.getElementById('videoFile');
         const videoPathDisplay = document.getElementById('videoPathDisplay');
         let currentTaskId = null;
+        let lastStatus = null;
+
+        document.getElementById('langToggle').addEventListener('click', () => I18N.switch());
 
         // Select File button opens the browser's native file picker
         document.getElementById('selectFileBtn').addEventListener('click', () => {
@@ -186,7 +197,7 @@
             const key = b === 'openai-compatible'
                 ? document.getElementById('openaiApiKey').value.trim()
                 : document.getElementById('apiKey').value.trim();
-            resultEl.textContent = 'Testing...';
+            resultEl.textContent = I18N.t('testing');
             resultEl.className = 'test-result';
             const payload = { backend: b, api_key: key };
             if (b === 'openai-compatible') {
@@ -198,10 +209,10 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload) });
                 const d = await r.json();
-                resultEl.textContent = (d.ok ? '[OK] ' : '[ERROR] ') + d.message;
+                resultEl.textContent = (d.ok ? I18N.t('okPrefix') : I18N.t('errPrefix')) + d.message;
                 resultEl.classList.add(d.ok ? 'ok' : 'err');
             } catch (err) {
-                resultEl.textContent = '[ERROR] Request failed: ' + err.message;
+                resultEl.textContent = I18N.t('reqFailed') + err.message;
                 resultEl.classList.add('err');
             }
         }
@@ -223,14 +234,14 @@
 
             const file = videoFile.files[0];
             if (!file) {
-                alert('Please select a video file');
+                alert(I18N.t('pleaseSelect'));
                 return;
             }
 
             const backend = document.getElementById('backend').value;
             const keyField = backend === 'openai-compatible' ? 'openaiApiKey' : 'apiKey';
             if (!document.getElementById(keyField).value.trim()) {
-                alert('Please enter your API key - without it the output CSVs will be empty');
+                alert(I18N.t('pleaseKey'));
                 return;
             }
 
@@ -274,9 +285,10 @@
 
             eventSource.onmessage = (event) => {
                 const status = JSON.parse(event.data);
+                lastStatus = status;
 
                 document.getElementById('progressText').textContent =
-                    `${status.step || 'Processing...'} (${Math.round(status.progress || 0)}%)`;
+                    `${status.step || I18N.t('processing')} (${Math.round(status.progress || 0)}%)`;
                 document.getElementById('progressDetail').textContent = status.detail || '';
                 document.getElementById('progressFill').style.width = `${status.progress || 0}%`;
 
@@ -285,17 +297,40 @@
                     showResult(status);
                 } else if (status.status === 'failed') {
                     eventSource.close();
-                    showResult(status, status.error || 'Processing failed');
+                    showResult(status, status.error || I18N.t('errPrefix'));
                 }
             };
 
             eventSource.onerror = () => {
                 eventSource.close();
-                showError('Connection lost');
+                showError(I18N.t('connectionLost'));
             };
         }
 
+        function renderUsage(status) {
+            const box = document.getElementById('usageBox');
+            if (!box || !status.token_usage) {
+                if (box) box.classList.add('hidden');
+                return;
+            }
+            const u = status.token_usage;
+            const num = (n) => (n || 0).toLocaleString();
+            const line = (label, d) =>
+                `${I18N.t(label)}: ${num(d.calls)} ${I18N.t('usageCalls')} · ` +
+                `${I18N.t('usageInput')} ${num(d.prompt)} · ` +
+                (d.cached ? `${I18N.t('usageCached')} ${num(d.cached)} · ` : '') +
+                `${I18N.t('usageOutput')} ${num(d.completion)} · ` +
+                `${I18N.t('usageTotal')} ${num(d.total)}`;
+            let text = '';
+            if (u.stage1) text += line('usageStage1', u.stage1) + '<br>';
+            if (u.stage2) text += line('usageStage2', u.stage2) + '<br>';
+            if (u.grand_total !== undefined) text += `${I18N.t('usageTotal')}: ${num(u.grand_total)}`;
+            document.getElementById('usageText').innerHTML = text;
+            box.classList.remove('hidden');
+        }
+
         function showResult(status, bannerMsg) {
+            lastStatus = status;
             document.getElementById('progress').classList.add('hidden');
             document.getElementById('result').classList.remove('hidden');
             document.getElementById('startBtn').disabled = false;
@@ -303,11 +338,11 @@
             const banner = document.getElementById('resultBanner');
             const title = document.getElementById('resultTitle');
             if (bannerMsg) {
-                title.textContent = 'Finished with issues';
+                title.textContent = I18N.t('finishedIssues');
                 banner.textContent = bannerMsg;
                 banner.classList.remove('hidden');
             } else {
-                title.textContent = 'Complete!';
+                title.textContent = I18N.t('completed');
                 banner.classList.add('hidden');
             }
 
@@ -315,21 +350,24 @@
             links.innerHTML = '';
 
             if (status.output_path) {
-                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}" download>Download Main CSV</a>`;
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}" download>${I18N.t('dlCsv')}</a>`;
             }
             if (status.stage1_path) {
-                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=1" download>Download Stage 1</a>`;
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=1" download>${I18N.t('dlStage1')}</a>`;
             }
             if (status.stage2_path) {
-                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=2" download>Download Stage 2</a>`;
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=2" download>${I18N.t('dlStage2')}</a>`;
             }
             if (status.vtt_path) {
-                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=vtt" download>Download Subtitles (VTT)</a>`;
+                links.innerHTML += `<a class="download-btn" href="/download/${currentTaskId}?stage=vtt" download>${I18N.t('dlVtt')}</a>`;
             }
             if (!links.innerHTML) {
-                links.innerHTML = '<p style="color:#888;">No downloadable files were produced for this run.</p>';
+                links.innerHTML = `<p style="color:#888;">${I18N.t('noFiles')}</p>`;
             }
+            renderUsage(status);
         }
+
+        window.onI18nChanged = () => { if (lastStatus) renderUsage(lastStatus); };
 
         function showError(msg) {
             document.getElementById('progress').classList.add('hidden');

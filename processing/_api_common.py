@@ -81,6 +81,16 @@ class TokenUsage:
     def total(self) -> int:
         return self.prompt_tokens + self.completion_tokens
 
+    def fields(self) -> dict:
+        """Structured counts for UI display (calls/prompt/cached/completion/total)."""
+        return {
+            "calls": self.calls,
+            "prompt": self.prompt_tokens,
+            "cached": self.cached_tokens,
+            "completion": self.completion_tokens,
+            "total": self.total(),
+        }
+
     def summary(self) -> str:
         cached = f", cache_hit={self.cached_tokens}" if self.cached_tokens else ""
         return (f"calls={self.calls} input={self.prompt_tokens} "
