@@ -1,4 +1,4 @@
-from processing.sensevoice_transcriber import _parse_result
+from processing.sensevoice_transcriber import _parse_torch_result as _parse_result
 
 
 def test_parse_result_empty():

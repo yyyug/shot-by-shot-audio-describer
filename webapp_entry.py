@@ -7,6 +7,7 @@ import sys
 import time
 import socket
 import logging
+from logging.handlers import RotatingFileHandler
 import threading
 import webbrowser
 from datetime import datetime
@@ -21,13 +22,13 @@ else:
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Log files older than 30 days are no longer needed; delete them on startup so
-# the log directory does not grow without bound.
+# Logs rotate at 5MB per file (3 backups: .1/.2/.3); anything older than 30
+# days is deleted on startup so the log directory cannot grow without bound.
 def _cleanup_old_logs(log_dir, max_age_days=30):
     try:
         cutoff = datetime.now().timestamp() - max_age_days * 86400
         for name in os.listdir(log_dir):
-            if not name.lower().endswith(".log"):
+            if ".log" not in name.lower():
                 continue
             path = os.path.join(log_dir, name)
             try:
@@ -41,11 +42,18 @@ def _cleanup_old_logs(log_dir, max_age_days=30):
 
 _cleanup_old_logs(DATA_DIR)
 
+# RotatingFileHandler: 5MB per file, 3 backups (.1/.2/.3), then 30-day age
+# cleanup above retires stale files.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(DATA_DIR, 'shot_by_shot_web.log'), encoding='utf-8'),
+        RotatingFileHandler(
+            os.path.join(DATA_DIR, 'shot_by_shot_web.log'),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding='utf-8',
+        ),
         logging.StreamHandler(),
     ],
 )

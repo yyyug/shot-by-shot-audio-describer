@@ -8,6 +8,7 @@ import json
 import time
 import threading
 import logging
+from logging.handlers import RotatingFileHandler
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -53,22 +54,29 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # Logging parity with the desktop version: processing errors must land in a
 # file so remote failures can be diagnosed (webapp_entry.py already points
 # basicConfig at the same file when frozen; this also covers `python app.py`).
+# The file handler rotates at 5MB (keeps 3 backups) so no single log grows
+# out of control; 30-day age cleanup above retires stale files.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(DATA_DIR, 'shot_by_shot_web.log'), encoding='utf-8'),
+        RotatingFileHandler(
+            os.path.join(DATA_DIR, 'shot_by_shot_web.log'),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding='utf-8',
+        ),
         logging.StreamHandler(),
     ],
 )
 
-# Log files older than 30 days are no longer needed; delete them on startup so
-# the log directory does not grow without bound.
+# Logs rotate at 5MB per file (3 backups: .1/.2/.3); anything older than 30
+# days is deleted on startup so the log directory cannot grow without bound.
 def _cleanup_old_logs(log_dir, max_age_days=30, pattern="*.log"):
     try:
         cutoff = datetime.now().timestamp() - max_age_days * 86400
         for name in os.listdir(log_dir):
-            if not name.lower().endswith(".log"):
+            if ".log" not in name.lower():
                 continue
             path = os.path.join(log_dir, name)
             try:
@@ -310,6 +318,10 @@ def process_video_task(task_id, video_path, options):
             status["progress"] = 50
 
         descriptions_dict = {}
+        # Usage trackers are referenced below even when no API key is provided
+        # (output-only runs), so they must exist in every path.
+        stage1_usage = _api_common().TokenUsage()
+        stage2_usage = _api_common().TokenUsage()
         if not api_key:
             logger.warning(f"Task {task_id}: no API key provided - VLM descriptions and Stage 2 will be SKIPPED (output CSVs will be empty)")
         if api_key:
@@ -319,8 +331,6 @@ def process_video_task(task_id, video_path, options):
             shot_scales = [2] * len(shots)
             threads = [[j for j in range(len(shots))]]
             stage1_error_categories = {}
-            stage1_usage = _api_common().TokenUsage()
-            stage2_usage = _api_common().TokenUsage()
             for i, unit in enumerate(units):
                 try:
                     logger.info(f"Task {task_id}: unit {i+1}/{len(units)} ({unit.get('mode', 'shot')})")

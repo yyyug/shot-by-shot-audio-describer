@@ -17,6 +17,11 @@
 import os
 import sys
 
+try:
+    from PyInstaller.utils.hooks import collect_all
+except ImportError:
+    collect_all = None
+
 PROJECT_ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
 DESKTOP_ENTRY = os.environ.get("SBS_ENTRY") or os.path.join(PROJECT_ROOT, "desktop.py")
@@ -64,16 +69,35 @@ COMMON_HIDDEN = [
     "funasr.utils.postprocess_utils",
     "modelscope",
     "modelscope.pipelines",
+    # ONNX transcription backend (funasr-onnx + onnxruntime)
+    "funasr_onnx",
+    "funasr_onnx.sensevoice_bin",
+    "funasr_onnx.utils",
+    "onnxruntime",
 ]
 
-DESKTOP_HIDDEN = COMMON_HIDDEN + [
+# onnxruntime ships many providers/data files that PyInstaller does not pick
+# up otherwise; collect them wholesale into the shared bundle.
+_ONNX_RT = collect_all("onnxruntime") if collect_all else ([], [], [])
+_ONNX_DATAS, _ONNX_BINARIES, _ONNX_HIDDEN = _ONNX_RT
+FA_ONNX_HIDDEN = []
+if collect_all:
+    try:
+        _FA = collect_all("funasr_onnx")
+        FA_ONNX_HIDDEN = list(_FA[2])
+        _ONNX_DATAS = list(_ONNX_DATAS) + list(_FA[0])
+        _ONNX_BINARIES = list(_ONNX_BINARIES) + list(_FA[1])
+    except Exception:
+        pass
+
+DESKTOP_HIDDEN = COMMON_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + [
     # pywebview backends (edgtw / mshtml / cef) get picked up dynamically
     "webview",
     "webview.platforms",
     "webview.platforms.edgtw",
 ]
 
-WEB_HIDDEN = COMMON_HIDDEN + [
+WEB_HIDDEN = COMMON_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + [
     # obfuscated webapp_entry.py's `from app import app` is invisible to
     # static analysis - pull the Flask glue module in explicitly
     "app",
@@ -115,8 +139,8 @@ DATA = [
 a = Analysis(
     [DESKTOP_ENTRY],
     pathex=DESKTOP_PATH,
-    binaries=[],
-    datas=DATA,
+    binaries=(_ONNX_BINARIES or []),
+    datas=(DATA + _ONNX_DATAS),
     hiddenimports=DESKTOP_HIDDEN,
     hookspath=[],
     hooksconfig={},
