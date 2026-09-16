@@ -40,6 +40,33 @@
         .download-btn:hover { background: #218838; }
         .progress-bar { width: 100%; height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden; margin: 10px 0; }
         .progress-fill { height: 100%; background: linear-gradient(90deg, #007bff, #00bfff); width: 0%; transition: width 0.3s ease; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+        .tab { flex: 1; padding: 10px; border: 1px solid #ddd; background: #f0f0f0; border-radius: 6px; }
+        .tab.active { background: #007bff; color: #fff; border-color: #007bff; }
+        .job-card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+        .job-card .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .job-btns { display: flex; gap: 8px; align-items: center; }
+        .job-btns button, .run-chip a, .back-btn { width: auto; margin: 0; padding: 8px 16px; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+        .badge.ok { background: #d4edda; color: #155724; }
+        .badge.err { background: #f8d7da; color: #721c24; }
+        .badge.gray { background: #e2e3e5; color: #383d41; }
+        .badge.blue { background: #cce5ff; color: #004085; }
+        .run-chip { border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px; margin: 8px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        .run-chip .dl a { display: inline-block; margin-right: 6px; padding: 5px 10px; background: #e9ecef; color: #333; text-decoration: none; border-radius: 4px; font-size: 12px; }
+        .unit-card { border: 1px solid #e3e3e3; border-radius: 8px; padding: 10px; margin: 10px 0; }
+        .unit-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+        .shot-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+        .shot-thumb { position: relative; cursor: pointer; border: 2px solid transparent; border-radius: 6px; }
+        .shot-thumb.selected { border-color: #28a745; }
+        .shot-thumb img { display: block; width: 110px; height: 62px; object-fit: cover; border-radius: 4px; }
+        .shot-thumb .tick { position: absolute; top: 2px; left: 2px; background: #28a745; color: #fff; font-size: 10px; padding: 0 4px; border-radius: 3px; display: none; }
+        .shot-thumb.selected .tick { display: block; }
+        .shot-thumb .time { position: absolute; bottom: 2px; width: 100%; text-align: center; font-size: 9px; color: #fff; text-shadow: 0 0 3px #000; background: rgba(0,0,0,.35); border-radius: 0 0 4px 4px; }
+        .desc-box { background: #f7f7f7; border-radius: 6px; padding: 8px; margin-top: 6px; font-size: 13px; max-height: 140px; overflow: auto; white-space: pre-wrap; color: #333; }
+        .desc-box.ad { background: #eef7ee; }
+        .reprocess-bar { border-top: 1px dashed #ccc; margin-top: 14px; padding-top: 12px; }
+        .reprocess-bar .ln-row { margin-top: 6px; }
     </style>
 </head>
 <body>
@@ -49,6 +76,12 @@
         </div>
         <h1 data-i18n="appTitle">BuddyAD</h1>
 
+        <div class="tabs">
+            <button type="button" id="tabTaskBtn" class="tab active" data-i18n="tabTask">New Task</button>
+            <button type="button" id="tabHistoryBtn" class="tab" data-i18n="tabHistory">History</button>
+        </div>
+
+        <div id="taskPanel">
         <form id="uploadForm">
             <!-- Video file -->
             <div class="form-group">
@@ -155,6 +188,25 @@
         <div id="error" class="error hidden">
             <h3 data-i18n="errorTitle">Error</h3>
             <p id="errorText"></p>
+        </div>
+        </div><!-- /taskPanel -->
+
+        <!-- History -->
+        <div id="historyPanel" class="hidden">
+            <div id="historyList"></div>
+            <div id="historyDetail" class="hidden">
+                <button type="button" id="backBtn" class="back-btn" style="margin-top:0;"><span data-i18n="backBtn">← Back</span></button>
+                <h3 id="jobTitle" style="margin-top:10px;"></h3>
+                <p id="jobMeta" style="color:#666; font-size:13px;"></p>
+                <div id="runList"></div>
+                <div id="reprocessForm"></div>
+                <div id="unitList"></div>
+                <div id="reprocessProgress" class="progress hidden">
+                    <h3 data-i18n="processing">Processing...</h3>
+                    <div class="progress-bar"><div id="rpProgressFill" class="progress-fill"></div></div>
+                    <p id="rpProgressText"></p>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -385,6 +437,272 @@
             document.getElementById('error').classList.remove('hidden');
             document.getElementById('errorText').textContent = msg;
             document.getElementById('startBtn').disabled = false;
+        }
+
+        // ================= History ("重生執行") =================
+        const $ = (id) => document.getElementById(id);
+        let currentJob = null;
+        const selectedShots = new Set();
+
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g,
+                c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        function fmtTime(t) {
+            if (t == null) return '-';
+            const m = Math.floor(t / 60), s = Math.floor(t % 60);
+            return m + ':' + String(s).padStart(2, '0');
+        }
+
+        function switchTab(showHistory) {
+            $('tabTaskBtn').classList.toggle('active', !showHistory);
+            $('tabHistoryBtn').classList.toggle('active', showHistory);
+            $('taskPanel').classList.toggle('hidden', showHistory);
+            $('historyPanel').classList.toggle('hidden', !showHistory);
+            if (showHistory) refreshHistory();
+        }
+        $('tabTaskBtn').addEventListener('click', () => switchTab(false));
+        $('tabHistoryBtn').addEventListener('click', () => switchTab(true));
+        $('backBtn').addEventListener('click', () => {
+            $('historyDetail').classList.add('hidden');
+            $('historyList').classList.remove('hidden');
+            refreshHistory();
+        });
+
+        async function refreshHistory() {
+            selectedShots.clear();
+            $('historyDetail').classList.add('hidden');
+            const list = $('historyList');
+            list.classList.remove('hidden');
+            let jobs = [];
+            try {
+                const r = await fetch('/history');
+                jobs = (await r.json()).jobs || [];
+            } catch (e) {
+                list.innerHTML = `<p>${I18N.t('reqFailed')} ${esc(e.message)}</p>`;
+                return;
+            }
+            if (!jobs.length) {
+                list.innerHTML = `<p style="color:#888;">${I18N.t('historyEmpty')}</p>`;
+                return;
+            }
+            list.innerHTML = jobs.map(j => {
+                const badge = j.run_status === 'completed' ? `<span class="badge ok">${I18N.t('completed')}</span>`
+                    : j.run_status === 'failed' ? `<span class="badge err">${I18N.t('errorTitle')}</span>`
+                    : `<span class="badge gray">${I18N.t('running')}</span>`;
+                return `<div class="job-card"><div class="row">
+                    <div><strong>${esc(j.filename)}</strong><br>
+                        <small style="color:#888;">${esc(j.created_at)} · ${j.shots_count} ${I18N.t('jobStats')} · ${j.units_count} ${I18N.t('unitLabel')} · ${j.runs_count} ${I18N.t('runsTitle')}</small></div>
+                    <div class="job-btns">${badge}
+                        <button type="button" class="back-btn" onclick="openJob('${j.job_id}')">${I18N.t('openBtn')}</button>
+                        <button type="button" class="back-btn" onclick="deleteJob('${j.job_id}')">${I18N.t('deleteBtn')}</button>
+                    </div></div></div>`;
+            }).join('');
+        }
+
+        async function deleteJob(id) {
+            if (!confirm(I18N.t('deleteConfirm'))) return;
+            await fetch('/history/' + id, { method: 'DELETE' });
+            refreshHistory();
+        }
+
+        async function openJob(id) {
+            let d;
+            try {
+                const r = await fetch('/history/' + id);
+                d = await r.json();
+                if (d.error) throw new Error(d.error);
+            } catch (e) { alert(e.message); return; }
+            currentJob = d;
+            $('historyList').classList.add('hidden');
+            $('historyDetail').classList.remove('hidden');
+            $('jobTitle').textContent = esc(d.job.filename);
+            $('jobMeta').textContent =
+                `${esc(d.job.created_at)} · ${I18N.t('videoType')}: ${esc(d.job.video_type || '-')} · ` +
+                `${d.shots.length} ${I18N.t('jobStats')} · ${d.units.length} ${I18N.t('unitLabel')}`;
+            renderRuns(d);
+            renderReprocessBar(d);
+            renderUnits(d);
+        }
+
+        function renderRuns(d) {
+            const runs = [...d.runs].reverse();
+            const list = runs.map(m => {
+                const badge = m.status === 'completed' ? `<span class="badge ok">${I18N.t('completed')}</span>`
+                    : m.status === 'failed' ? `<span class="badge err">${I18N.t('errorTitle')}</span>`
+                    : `<span class="badge gray">${I18N.t('running')}</span>`;
+                const current = m.run === d.job.current_run
+                    ? `<span class="badge blue">${I18N.t('currentBadge')}</span>` : '';
+                const dl = [];
+                if (m.stage1_count !== undefined || m.run === 0) {
+                    dl.push(`<a href="${d.download_base}?run=${m.run}&kind=stage1" download>${I18N.t('kindStage1')}</a>`);
+                }
+                dl.push(`<a href="${d.download_base}?run=${m.run}&kind=ad" download>${I18N.t('kindAD')}</a>`);
+                dl.push(`<a href="${d.download_base}?run=${m.run}&kind=final" download>${I18N.t('kindFinal')}</a>`);
+                dl.push(`<a href="${d.download_base}?run=${m.run}&kind=vtt" download>${I18N.t('kindVTT')}</a>`);
+                return `<div class="run-chip">
+                    <strong>${I18N.t('runLabel')} ${m.run}</strong>
+                    <span style="color:#888; font-size:12px;">${esc(m.ts || '')}</span>
+                    ${badge}${current}
+                    <span class="dl">${dl.join('')}</span>
+                </div>`;
+            });
+            $('runList').innerHTML =
+                `<h3 style="margin-top:16px;">${I18N.t('runsTitle')}</h3>` + list.join('');
+        }
+
+        function collectShots(model) {
+            const map = {};
+            model.units.forEach(u => (u.shot_ids || []).forEach(sid => { map[sid] = true; }));
+            return Object.keys(map).map(Number);
+        }
+
+        function renderReprocessBar(d) {
+            const box = $('reprocessForm');
+            if (!d.source_available) {
+                box.innerHTML = `<p style="color:#b02a37;">${I18N.t('sourceMissing')}</p>`;
+                return;
+            }
+            box.innerHTML = `<div class="reprocess-bar">
+                <p style="margin-bottom:6px;">${I18N.t('reprocessHint')}</p>
+                <div class="ln-row" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button type="button" class="back-btn" onclick="toggleAllShots(true)">${I18N.t('selectAll')}</button>
+                    <button type="button" class="back-btn" onclick="toggleAllShots(false)">${I18N.t('clearSel')}</button>
+                    <span id="selCount" style="color:#888; font-size:13px;">0 ${I18N.t('selectedShots')}</span>
+                </div>
+                <div class="ln-row">
+                    <label for="rpBackend">${I18N.t('llm')}:</label>
+                    <select id="rpBackend" style="width:auto; min-width:220px;">
+                        <option value="gemini-3.7-flash" selected>Gemini 3.7 Flash</option>
+                        <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                        <option value="qwen">Qwen Flash</option>
+                        <option value="deepseek">DeepSeek Flash</option>
+                        <option value="openai-compatible">OpenAI Compatible</option>
+                    </select>
+                </div>
+                <div class="ln-row" id="rpKeyRow">
+                    <label for="rpKey">${I18N.t('apiKey')}:</label>
+                    <input type="password" id="rpKey" style="width:100%;">
+                </div>
+                <div class="ln-row hidden" id="rpOpenAiRow">
+                    <label for="rpUrl">${I18N.t('apiBaseUrl')}:</label>
+                    <input type="text" id="rpUrl" value="https://api.openai.com/v1">
+                    <label for="rpModel" style="margin-top:6px;">${I18N.t('modelName')}:</label>
+                    <input type="text" id="rpModel" value="qwen/qwen3.8-flash">
+                    <label for="rpOpenAiKey" style="margin-top:6px;">${I18N.t('apiKey')}:</label>
+                    <input type="password" id="rpOpenAiKey" style="width:100%;">
+                </div>
+                <div class="ln-row checkbox">
+                    <input type="checkbox" id="rpContext" ${d.job.use_context_extender ? 'checked' : ''}>
+                    <label for="rpContext">${I18N.t('useContext')}</label>
+                </div>
+                <button type="button" id="reprocessBtn" onclick="reprocessNow()">${I18N.t('reprocessBtn')}</button>
+            </div>`;
+            $('rpBackend').addEventListener('change', () => {
+                const isOA = $('rpBackend').value === 'openai-compatible';
+                $('rpOpenAiRow').classList.toggle('hidden', !isOA);
+                $('rpKeyRow').classList.toggle('hidden', isOA);
+            });
+        }
+
+        function toggleAllShots(selectAll) {
+            if (!currentJob) return;
+            currentJob.units.forEach(u => (u.shot_ids || []).forEach(sid => {
+                selectAll ? selectedShots.add(sid) : selectedShots.delete(sid);
+            }));
+            applySelection();
+        }
+
+        function renderUnits(d) {
+            const html = d.units.map(u => {
+                const mode = u.mode === 'ad_interval'
+                    ? `<span class="badge gray">${I18N.t('gapMode')}</span>` : '';
+                const thumbs = (u.shot_ids || []).map(sid => {
+                    const s = d.shots.find(x => x.shot_id === sid);
+                    if (!s) return '';
+                    const sel = selectedShots.has(sid) ? 'selected' : '';
+                    return `<div class="shot-thumb ${sel}" id="shot-${sid}" onclick="toggleShot(${sid}, event)">
+                        <img src="${d.thumb_base}${sid}" alt="shot ${sid}">
+                        <span class="tick">✓</span>
+                        <span class="time">#${sid} ${fmtTime(s.start_time)}–${fmtTime(s.end_time)}</span>
+                    </div>`;
+                }).join('');
+                const desc = u.description || '';
+                const ad = u.ad_sentence || '';
+                return `<div class="unit-card">
+                    <div class="unit-head">
+                        <strong>${I18N.t('unitLabel')} #${u.unit_id}</strong>
+                        <span style="color:#888; font-size:12px;">${fmtTime(u.start)}–${fmtTime(u.end)}</span>
+                        ${mode}
+                        <span class="badge ok" style="font-size:11px;">${esc(u.description ? u.description.length : 0)} chars</span>
+                    </div>
+                    <div class="shot-grid">${thumbs}</div>
+                    <div class="desc-box">${desc ? esc(desc) : `<span style="color:#a0a0a0;">${I18N.t('noDescription')}</span>`}</div>
+                    ${ad ? `<div class="desc-box ad"><strong>${I18N.t('adLabel')}:</strong> ${esc(ad)}</div>` : ''}
+                </div>`;
+            }).join('');
+            $('unitList').innerHTML = `<h3 style="margin-top:18px;">${I18N.t('unitLabel')}s</h3>` + html;
+        }
+
+        function toggleShot(sid) {
+            selectedShots.has(sid) ? selectedShots.delete(sid) : selectedShots.add(sid);
+            applySelection();
+        }
+
+        function applySelection() {
+            if (currentJob) {
+                currentJob.units.forEach(u => (u.shot_ids || []).forEach(sid => {
+                    const el = $('shot-' + sid);
+                    if (el) el.classList.toggle('selected', selectedShots.has(sid));
+                }));
+            }
+            const c = $('selCount');
+            if (c) c.textContent = `${selectedShots.size} ${I18N.t('selectedShots')}`;
+        }
+
+        async function reprocessNow() {
+            if (!currentJob || !selectedShots.size) { alert(I18N.t('pleaseSelectShots')); return; }
+            const b = $('rpBackend').value;
+            const isOA = b === 'openai-compatible';
+            const key = isOA ? $('rpOpenAiKey').value.trim() : $('rpKey').value.trim();
+            if (!key) { alert(I18N.t('pleaseKey')); return; }
+            const payload = {
+                shot_ids: [...selectedShots],
+                backend: b,
+                api_key: key,
+                openai_url: isOA ? $('rpUrl').value.trim() : null,
+                openai_model: isOA ? $('rpModel').value.trim() : null,
+                video_type: currentJob.job.video_type || 'movie',
+                use_context_extender: $('rpContext').checked
+            };
+            let data;
+            try {
+                const r = await fetch(`/history/${currentJob.job_id}/reprocess`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                data = await r.json();
+                if (data.error) { alert(data.error); return; }
+            } catch (e) { alert(I18N.t('reqFailed') + e.message); return; }
+            const box = $('reprocessProgress');
+            box.classList.remove('hidden');
+            $('rpProgressText').textContent = I18N.t('reprocessing');
+            $('rpProgressFill').style.width = '0%';
+            const es = new EventSource(`/progress/${data.task_id}`);
+            es.onmessage = (ev) => {
+                const st = JSON.parse(ev.data);
+                $('rpProgressFill').style.width = `${st.progress || 0}%`;
+                $('rpProgressText').textContent = `${st.step || ''} ${st.detail ? '— ' + st.detail : ''}`;
+                if (st.status === 'completed' || st.status === 'failed') {
+                    es.close();
+                    box.classList.add('hidden');
+                    alert(st.status === 'completed' ? I18N.t('reprocessDone') : (st.error || I18N.t('errorTitle')));
+                    refreshHistory();
+                    openJob(currentJob.job_id);
+                }
+            };
+            es.onerror = () => { es.close(); box.classList.add('hidden'); alert(I18N.t('connectionLost')); };
         }
     </script>
 </body>

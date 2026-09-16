@@ -1,0 +1,542 @@
+"""Job history + reprocess engine (shared by the Flask app and the pywebview
+desktop app).
+
+Layout under DATA_DIR (root outputs dir; %LOCALAPPDATA%\\BuddyAd when frozen):
+
+    history/<job_id>/
+        job.json            # neutral metadata ONLY (no api url / model / key)
+        source.<ext>        # archived copy of the source video (web uploads)
+        shots.json          # detected shots
+        subtitles.json      # transcription segments
+        units.json          # AD units (dialogue-gap intervals or per-shot)
+        thumbs/<shot_id>.jpg  # one representative thumbnail per shot
+        runs/<n>/
+            meta.json       # run timestamp / status / success counts
+            stage1.json     # {unit_id: {start,end,shot_ids,description}}
+            stage2.json     # {unit_id: ad_sentence}
+            DetailsDescription.csv / AD.csv / final.csv / final.vtt
+
+A reprocess ("重生執行") only re-describes the units that contain the selected
+shots, reuses the descriptions of every other unit from the current run, then
+re-runs stage 2 over the complete description set and snapshots everything into
+a NEW run directory (previous runs are kept; the newest is "current").
+"""
+import os
+import json
+import shutil
+import time
+from datetime import datetime
+
+# ---------------------------------------------------------------------------
+# persistence helpers
+# ---------------------------------------------------------------------------
+
+def history_dir(data_dir):
+    return os.path.join(data_dir, "history")
+
+
+def job_dir(job_id, data_dir):
+    return os.path.join(history_dir(data_dir), str(job_id))
+
+
+def job_file(job_id, data_dir, *parts):
+    return os.path.join(job_dir(job_id, data_dir), *parts)
+
+
+def run_dir(job_id, run, data_dir):
+    return os.path.join(job_dir(job_id, data_dir), "runs", str(run))
+
+
+def run_file(job_id, run, data_dir, name):
+    return os.path.join(run_dir(job_id, run, data_dir), name)
+
+
+def _atomic_write(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def _read_json(path, default=None):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# job lifecycle
+# ---------------------------------------------------------------------------
+
+def create_job(job_id, filename, data_dir, **meta):
+    """Register a new job. meta must only contain non-sensitive neutral data
+    (page/book state); never api url / model / api key."""
+    os.makedirs(job_dir(job_id, data_dir), exist_ok=True)
+    rec = {
+        "job_id": job_id,
+        "filename": filename,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "current_run": 0,
+        "runs": [0],
+    }
+    rec.update(meta)
+    _atomic_write(job_file(job_id, data_dir, "job.json"), rec)
+    return rec
+
+
+def load_job(job_id, data_dir):
+    return _read_json(job_file(job_id, data_dir, "job.json"))
+
+
+def list_jobs(data_dir):
+    """All job records, newest first."""
+    root = history_dir(data_dir)
+    if not os.path.isdir(root):
+        return []
+    jobs = []
+    for name in os.listdir(root):
+        if name.startswith("."):
+            continue
+        cand = os.path.join(root, name)
+        if os.path.isdir(cand):
+            rec = load_job(name, data_dir)
+            if rec:
+                jobs.append(rec)
+    jobs.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return jobs
+
+
+def update_job(job_id, data_dir, **fields):
+    rec = load_job(job_id, data_dir)
+    if rec is None:
+        return None
+    rec.update(fields)
+    _atomic_write(job_file(job_id, data_dir, "job.json"), rec)
+    return rec
+
+
+def set_current_run(job_id, run, data_dir):
+    rec = update_job(job_id, data_dir, current_run=run)
+    if rec is not None and run not in rec.get("runs", []):
+        rec["runs"] = list(rec.get("runs", [])) + [run]
+        _atomic_write(job_file(job_id, data_dir, "job.json"), rec)
+
+
+def archive_source_video(job_id, video_path, ext, data_dir):
+    """Move the uploaded video into the job folder (returns new path)."""
+    dest = job_file(job_id, data_dir, "source" + ext)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.move(video_path, dest)
+    return dest
+
+
+def resolve_source_video(job_id, data_dir):
+    """Return the on-disk video for a job: archived copy (web) or the local
+    path recorded on the desktop app (source_path)."""
+    job = load_job(job_id, data_dir)
+    if not job:
+        return None
+    if job.get("source_path"):
+        if os.path.isfile(job["source_path"]):
+            return job["source_path"]
+    exts = [job.get("ext", ""), ".mp4", ".mkv", ".mov", ".avi", ".webm"]
+    for ext in exts:
+        cand = job_file(job_id, data_dir, "source" + ext)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def save_shots(job_id, shots, data_dir):
+    _atomic_write(job_file(job_id, data_dir, "shots.json"), {"shots": shots})
+
+
+def save_subtitles(job_id, subtitles, data_dir):
+    _atomic_write(job_file(job_id, data_dir, "subtitles.json"), {"subtitles": subtitles})
+
+
+def save_units(job_id, units, data_dir):
+    _atomic_write(job_file(job_id, data_dir, "units.json"), {"units": units})
+
+
+def load_shots(job_id, data_dir):
+    return _read_json(job_file(job_id, data_dir, "shots.json"), {}).get("shots", [])
+
+
+def load_units(job_id, data_dir):
+    return _read_json(job_file(job_id, data_dir, "units.json"), {}).get("units", [])
+
+
+# ---------------------------------------------------------------------------
+# thumbnails
+# ---------------------------------------------------------------------------
+
+def thumb_path(job_id, shot_id, data_dir):
+    return job_file(job_id, data_dir, "thumbs", f"{shot_id}.jpg")
+
+
+def ensure_thumbs(job_id, data_dir, video_path=None, max_width=320):
+    """Generate one thumbnail per shot if missing (cached across runs)."""
+    shots = load_shots(job_id, data_dir)
+    missing = [s for s in shots
+               if not os.path.isfile(thumb_path(job_id, s["shot_id"], data_dir))]
+    if not missing:
+        return shots
+    if video_path is None:
+        video_path = resolve_source_video(job_id, data_dir)
+    if not video_path or not os.path.isfile(video_path):
+        return shots
+    import cv2
+    cap = cv2.VideoCapture(video_path)
+    try:
+        for s in missing:
+            mid = (s.get("start_time", 0) + s.get("end_time", 0)) / 2.0
+            cap.set(cv2.CAP_PROP_POS_MSEC, mid * 1000)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            h, w = frame.shape[:2]
+            if max_width and w > max_width:
+                scale = max_width / float(w)
+                frame = cv2.resize(frame, (max_width, int(h * scale)))
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                path = thumb_path(job_id, s["shot_id"], data_dir)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(buf.tobytes())
+    finally:
+        cap.release()
+    return shots
+
+
+def thumb_data_url(job_id, shot_id, data_dir):
+    import base64
+    path = thumb_path(job_id, shot_id, data_dir)
+    if not os.path.isfile(path):
+        return None
+    with open(path, "rb") as f:
+        return "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# run persistence
+# ---------------------------------------------------------------------------
+
+def begin_run(job_id, run, data_dir, **meta):
+    rec = {
+        "run": run,
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "running",
+    }
+    rec.update(meta)
+    _atomic_write(run_file(job_id, run, data_dir, "meta.json"), rec)
+    return rec
+
+
+def update_run(job_id, run, data_dir, **fields):
+    path = run_file(job_id, run, data_dir, "meta.json")
+    rec = _read_json(path, {})
+    rec.update(fields)
+    rec.setdefault("run", run)
+    _atomic_write(path, rec)
+
+
+def load_run_meta(job_id, run, data_dir):
+    return _read_json(run_file(job_id, run, data_dir, "meta.json"), {})
+
+
+def load_stage1(job_id, run, data_dir):
+    """{unit_id(str): {start,end,shot_ids,mode,description}}"""
+    d = _read_json(run_file(job_id, run, data_dir, "stage1.json"), {})
+    return d if isinstance(d, dict) else {}
+
+
+def record_unit(job_id, run, data_dir, unit, description):
+    """Incrementally persist one unit's description into a run's stage1.json."""
+    path = run_file(job_id, run, data_dir, "stage1.json")
+    d = load_stage1(job_id, run, data_dir)
+    d[str(unit["unit_id"])] = {
+        "start": unit.get("start", 0),
+        "end": unit.get("end", 0),
+        "shot_ids": unit.get("shot_ids", []),
+        "mode": unit.get("mode", ""),
+        "description": description,
+    }
+    _atomic_write(path, d)
+
+
+def save_stage2(job_id, run, data_dir, ad_sentence_map):
+    _atomic_write(run_file(job_id, run, data_dir, "stage2.json"),
+                  {str(k): v for k, v in ad_sentence_map.items()})
+
+
+def load_stage2(job_id, run, data_dir):
+    d = _read_json(run_file(job_id, run, data_dir, "stage2.json"), {})
+    return d if isinstance(d, dict) else {}
+
+
+def write_run_files(job_id, run, data_dir, stage1_results, stage2_results,
+                    ad_sentence_map, units, mirror_root=True, timestamp=None):
+    """Write the canonical CSV/VTT set into runs/<n>/ and (optionally) mirror
+    timestamped copies at DATA_DIR root so the "Outputs" folder stays usable."""
+    import pandas as pd
+    from processing.vtt_writer import write_vtt
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _write_csv(run_name, root_name, df):
+        df.to_csv(run_file(job_id, run, data_dir, run_name),
+                  index=False, encoding="utf-8-sig")
+        if mirror_root:
+            df.to_csv(os.path.join(data_dir, root_name),
+                      index=False, encoding="utf-8-sig")
+
+    _write_csv("DetailsDescription.csv",
+               f"{timestamp}_DetailsDescription.csv", pd.DataFrame(stage1_results))
+
+    if stage2_results is not None:
+        _write_csv("AD.csv", f"{timestamp}_AD.csv", pd.DataFrame(stage2_results))
+
+    output_df = pd.DataFrame([{
+        "shot_id": u["unit_id"],
+        "start": u.get("start", 0),
+        "end": u.get("end", 0),
+        "ad_sentence": ad_sentence_map.get(u["unit_id"], ""),
+    } for u in units])
+    _write_csv("final.csv", f"{timestamp}-final.csv", output_df)
+
+    vtt_rows = output_df.to_dict("records")
+    write_vtt(run_file(job_id, run, data_dir, "final.vtt"), vtt_rows)
+    if mirror_root:
+        write_vtt(os.path.join(data_dir, f"{timestamp}-final.vtt"), vtt_rows)
+
+    return timestamp
+
+
+def _api_common():
+    import processing._api_common as m
+    return m
+
+
+# ---------------------------------------------------------------------------
+# reprocess ("重生執行")
+# ---------------------------------------------------------------------------
+
+def build_film_grammar(video_type, custom_opening, unit, shots):
+    return {
+        "video_type": video_type,
+        "label_type": "none",
+        "char_text": "",
+        "current_shots": [s - 1 for s in unit.get("shot_ids", [])],
+        "threads": [[j for j in range(len(shots))]],
+        "shot_scales": [2] * len(shots),
+        "prompt_variant": 4,
+        "custom_opening": (custom_opening or "").strip() or None,
+    }
+
+
+def describe_units(units, video_path, job_id, run, data_dir, backend, api_key,
+                   openai_url, openai_model, video_type, custom_opening,
+                   use_context_extender, shots, status, logger, extractors,
+                   emit=None, progress_start=50):
+    """Describe each unit, persisting results incrementally into
+    runs/<run>/stage1.json. Returns (descriptions, error_categories)."""
+    from processing.vlm_describer import describe_frames
+    descriptions = {}
+    categories = {}
+    total = len(units)
+    for i, unit in enumerate(units):
+        try:
+            frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
+            if use_context_extender and shots:
+                context_shots = extractors["context_shots"](shots, unit.get("shot_ids", []))
+                frames_b64 = extractors["context"](video_path, frame_shot, context_shots)
+            else:
+                frames_b64 = extractors["base"](video_path, frame_shot)
+            film_grammar = build_film_grammar(video_type, custom_opening, unit, shots)
+            desc = describe_frames(frames_b64, api_key, backend=backend,
+                                   film_grammar=film_grammar,
+                                   openai_url=openai_url, openai_model=openai_model)
+            descriptions[unit["unit_id"]] = desc or ""
+            logger.info(f"reprocess unit {i + 1}/{total} done ({len(desc or '')} chars)")
+        except Exception as e:
+            descriptions[unit["unit_id"]] = ""
+            logger.error(f"reprocess unit {i + 1}/{total} failed: {e}", exc_info=True)
+            cat = _api_common().categorize_error(e)
+            categories[cat] = categories.get(cat, 0) + 1
+        record_unit(job_id, run, data_dir, unit, descriptions[unit["unit_id"]])
+        if i < total - 1:
+            time.sleep(3)
+        status["detail"] = f"Describing unit {i + 1}/{total}"
+        status["progress"] = progress_start + int((i + 1) / total * 20)
+        if emit:
+            emit(status)
+    return descriptions, categories
+
+
+def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
+                   status, logger, extractors, emit=None, acquire=None,
+                   release=None):
+    """Re-describe only the units containing the selected shots, reuse every
+    other unit's description from the current run, then re-run stage 2 and
+    snapshot everything into a fresh run directory."""
+    if acquire and not acquire():
+        status["status"] = "failed"
+        status["error"] = "Another task is already processing. Wait for it to finish."
+        if emit:
+            emit(status)
+        return None
+    try:
+        job = load_job(job_id, data_dir)
+        if not job:
+            status["status"] = "failed"
+            status["error"] = "Job not found"
+            if emit:
+                emit(status)
+            return None
+
+        shots = load_shots(job_id, data_dir)
+        units = load_units(job_id, data_dir)
+        video_path = resolve_source_video(job_id, data_dir)
+        if not video_path or not os.path.isfile(video_path):
+            raise RuntimeError("Source video file is missing - cannot reprocess.")
+
+        selected = set(selected_unit_ids)
+        targets = [u for u in units if u["unit_id"] in selected]
+        if not targets:
+            raise RuntimeError("Selected shots map to no AD units.")
+
+        prev_run = job.get("current_run", 0)
+        new_run = (max(job.get("runs", []) or [0])) + 1
+        base = load_stage1(job_id, prev_run, data_dir)
+
+        # Seed the new run's stage1 with the previous snapshot so partial
+        # failures still keep the reuse of unselected units.
+        prev_path = run_file(job_id, prev_run, data_dir, "stage1.json")
+        new_path = run_file(job_id, new_run, data_dir, "stage1.json")
+        if os.path.isfile(prev_path):
+            os.makedirs(os.path.dirname(new_path), exist_ok=True)
+            shutil.copyfile(prev_path, new_path)
+        else:
+            _atomic_write(new_path, {})
+
+        begin_run(job_id, new_run, data_dir, kind="reprocess", selected_units=len(targets))
+        set_current_run(job_id, new_run, data_dir)
+
+        backend = options.get("backend", "gemini")
+        api_key = options.get("api_key") or ""
+        status["step"] = "stage1_vlm"
+        status["detail"] = f"Re-describing {len(targets)} AD unit(s)..."
+        status["progress"] = 40
+        if emit:
+            emit(status)
+
+        _, error_categories = describe_units(
+            targets, video_path, job_id, new_run, data_dir, backend, api_key,
+            options.get("openai_url"), options.get("openai_model"),
+            options.get("video_type", "movie"),
+            options.get("custom_opening"),
+            bool(options.get("use_context_extender")), shots, status, logger,
+            extractors, emit=emit, progress_start=50)
+
+        # Merge: selected units get their fresh descriptions, everything else
+        # keeps the previous run's text.
+        merged = load_stage1(job_id, new_run, data_dir)
+        stage1_results = []
+        for u in units:
+            rec = merged.get(str(u["unit_id"]), {})
+            stage1_results.append({
+                "shot_id": u["unit_id"],
+                "start": u.get("start", 0),
+                "end": u.get("end", 0),
+                "description": rec.get("description", ""),
+                "unit_mode": u.get("mode", ""),
+            })
+        success_count = sum(1 for r in stage1_results if str(r["description"]).strip())
+        stage1_ready = len(units) > 0 and success_count / len(units) >= 0.5
+        status["detail"] = f"Described {success_count}/{len(units)} units"
+        status["progress"] = 80
+        if emit:
+            emit(status)
+
+        ad_sentence_map = {}
+        stage2_results = None
+        run_status = "completed"
+        error_msg = None
+
+        if not options.get("skip_stage2") and api_key and stage1_ready:
+            status["step"] = "stage2_summarize"
+            status["detail"] = "Summarizing AD sentences..."
+            if emit:
+                emit(status)
+            from processing.llm_summarizer import batch_summarize
+            stage1_for_stage2 = [{
+                "shot_id": r["shot_id"], "start": r["start"], "end": r["end"],
+                "description": r["description"],
+            } for r in stage1_results]
+            stage2_results = batch_summarize(
+                stage1_for_stage2, api_key, backend=backend,
+                video_type=options.get("video_type", "movie"),
+                openai_url=options.get("openai_url"),
+                openai_model=options.get("openai_model"))
+            ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
+            save_stage2(job_id, new_run, data_dir, ad_sentence_map)
+        elif api_key and not stage1_ready:
+            run_status = "failed"
+            _ac = _api_common()
+            dominant = _ac.dominant_category(error_categories)
+            error_msg = _ac.build_stage1_blocked_message(
+                dominant, success_count, len(units))
+            status["status"] = "failed"
+            status["partial"] = True
+            status["error"] = error_msg
+        else:
+            run_status = "completed" if success_count else "failed"
+            if not success_count:
+                status["status"] = "failed"
+                status["error"] = "Stage 1 produced no descriptions (check API key / network)."
+
+        if stage2_results is not None or status.get("status") != "failed":
+            timestamp = write_run_files(
+                job_id, new_run, data_dir, stage1_results, stage2_results,
+                ad_sentence_map, units, mirror_root=True)
+            update_run(job_id, new_run, data_dir,
+                       status="completed", stage1_count=success_count,
+                       stage2_count=len(ad_sentence_map))
+            status["status"] = "completed"
+            status["progress"] = 100
+            status["job_id"] = job_id
+            status["run"] = new_run
+            status["stage1_path"] = f"{timestamp}_DetailsDescription.csv"
+            if stage2_results is not None:
+                status["stage2_path"] = f"{timestamp}_AD.csv"
+                status["output_path"] = f"{timestamp}-final.csv"
+                status["vtt_path"] = f"{timestamp}-final.vtt"
+            logger.info(f"Job {job_id}: reprocess run {new_run} completed "
+                        f"(stage1 {success_count}/{len(units)}, stage2 {len(ad_sentence_map)})")
+        else:
+            # still snapshot stage-1-only run (no stage 2)
+            update_run(job_id, new_run, data_dir,
+                       status="failed", stage1_count=success_count)
+            if status.get("status") != "failed":
+                status["status"] = "completed"
+            logger.warning(f"Job {job_id}: reprocess run {new_run} finished "
+                           f"with status={status.get('status')}")
+
+        if emit:
+            emit(status)
+        return {"run": new_run, "status": status.get("status")}
+    except Exception as e:
+        status["status"] = "failed"
+        status["error"] = str(e)
+        logger.critical(f"Job {job_id}: reprocess failed: {e}", exc_info=True)
+        if emit:
+            emit(status)
+        return None
+    finally:
+        if release:
+            release(task_id)

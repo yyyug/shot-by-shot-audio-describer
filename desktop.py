@@ -179,6 +179,7 @@ from processing.llm_summarizer import batch_summarize, estimate_word_limit, test
 from processing.film_grammar import get_effective_shot_scale, select_prompt_variant
 from processing.character_recognizer import detect_faces, extract_face_embeddings, cluster_faces
 from processing.vtt_writer import write_vtt
+from processing import history_engine as history
 
 # Lazy import to mirror vlm_describer/llm_summarizer (also keeps the frozen
 # PyArmor builds from resolving a private module at import time).
@@ -272,6 +273,16 @@ class AppBridge:
         try:
             # Generate timestamp for file names
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # History record: keep only neutral metadata + a local path reference
+            # (never the api url / model / api key).
+            history.create_job(
+                task_id, os.path.basename(video_path), DATA_DIR,
+                source_path=video_path,
+                video_type=options.get("video_type", "movie"),
+                gap_detection_enabled=bool(options.get("use_whisper", True)),
+                use_context_extender=bool(options.get("use_context_extender", False)),
+            )
             
             # Get video duration for progress display
             import cv2
@@ -294,6 +305,7 @@ class AppBridge:
             
             shots = detect_shots(video_path, callback=shot_progress)
             status["shots_count"] = len(shots)
+            history.save_shots(task_id, shots, DATA_DIR)
             logger.info(f"{len(shots)} shots detected")
             status["detail"] = f"Found {len(shots)} shots"
             status["progress"] = 20
@@ -322,6 +334,7 @@ class AppBridge:
             else:
                 status["detail"] = "Skipped"
             status["progress"] = 30
+            history.save_subtitles(task_id, subtitles, DATA_DIR)
             self.emit_progress(task_id, status)
             
             # Step 3: Build AD units (dialogue gaps when transcribed, else shots)
@@ -356,6 +369,11 @@ class AppBridge:
                     "shot_ids": [],
                 })
             status["progress"] = 40
+            history.save_units(task_id, units, DATA_DIR)
+            history.begin_run(task_id, 0, DATA_DIR,
+                              kind="initial",
+                              gap_detection_active=bool(subtitles))
+            history.set_current_run(task_id, 0, DATA_DIR)
             self.emit_progress(task_id, status)
             logger.info(f"Built {len(units)} AD units")
             
@@ -421,9 +439,11 @@ class AppBridge:
                         )
                         logger.info(f"Unit {i+1} completed: {len(desc)} chars")
                         descriptions_dict[unit["unit_id"]] = desc
+                        history.record_unit(task_id, 0, DATA_DIR, unit, desc)
                     except Exception as e:
                         logger.error(f"Unit {i+1} failed: {e}", exc_info=True)
                         descriptions_dict[unit["unit_id"]] = ""
+                        history.record_unit(task_id, 0, DATA_DIR, unit, "")
                         status["detail"] = f"Unit {i+1} failed: {str(e)[:50]}"
                         if e is not None:
                             cat = _api_common().categorize_error(e)
@@ -482,6 +502,8 @@ class AppBridge:
                     status["error"] = _ac.build_stage1_blocked_message(
                         dominant, success_count, len(units)
                     )
+                    history.update_run(task_id, 0, DATA_DIR,
+                                       status="failed", stage1_count=success_count)
                     logger.warning(f"Aborting stage 2 - only {success_count}/{len(units)} shots succeeded (cause={dominant})")
                     self.emit_progress(task_id, status)
                 else:
@@ -522,12 +544,23 @@ class AppBridge:
                     write_vtt(vtt_path, output_df.to_dict("records"))
 
                     logger.info(f"Completed - outputs {timestamp}_DetailsDescription.csv / {timestamp}_AD.csv / {timestamp}-final.csv / {timestamp}-final.vtt")
+                    history.save_stage2(task_id, 0, DATA_DIR, ad_sentence_map)
+                    history.write_run_files(
+                        task_id, 0, DATA_DIR, stage1_results, stage2_results,
+                        ad_sentence_map, units, mirror_root=False)
+                    history.update_run(task_id, 0, DATA_DIR,
+                                       status="completed", stage1_count=success_count,
+                                       stage2_count=len(ad_sentence_map))
 
                     self.emit_progress(task_id, status)
             else:
                 # No API key or stage 2 explicitly skipped: only stage-1 CSV exists.
                 status["status"] = "completed"
                 status["progress"] = 100
+                history.write_run_files(task_id, 0, DATA_DIR, stage1_results, None,
+                                        {}, units, mirror_root=False)
+                history.update_run(task_id, 0, DATA_DIR,
+                                   status="completed", stage1_count=success_count)
                 logger.info(f"Completed (stage 2 not run) - outputs {timestamp}_DetailsDescription.csv")
                 self.emit_progress(task_id, status)
 
@@ -547,6 +580,11 @@ class AppBridge:
                 f"Processing FAILED at step={status.get('step')} progress={status.get('progress')}: {e}",
                 exc_info=True,
             )
+            try:
+                history.update_run(task_id, 0, DATA_DIR,
+                                   status="failed", step=status.get("step"))
+            except Exception:
+                pass
             self.emit_progress(task_id, status)
         finally:
             if self._active_task_id == task_id:
@@ -645,6 +683,131 @@ class AppBridge:
         """Get output file path for download."""
         status = self.processing_status.get(task_id, {})
         return status.get("output_path")
+
+    # ------------------------------------------------------------------ history
+    def _try_acquire_task(self, task_id):
+        if self._active_task_id is not None:
+            return False
+        self._active_task_id = task_id
+        return True
+
+    def _release_task(self, task_id):
+        if self._active_task_id == task_id:
+            self._active_task_id = None
+
+    def list_history(self):
+        jobs = []
+        for job in history.list_jobs(DATA_DIR):
+            job_id = job["job_id"]
+            meta = history.load_run_meta(job_id, job.get("current_run", 0), DATA_DIR)
+            jobs.append({
+                "job_id": job_id,
+                "filename": job.get("filename", ""),
+                "created_at": job.get("created_at", ""),
+                "shots_count": len(history.load_shots(job_id, DATA_DIR)),
+                "units_count": len(history.load_units(job_id, DATA_DIR)),
+                "current_run": job.get("current_run", 0),
+                "run_status": meta.get("status", "running"),
+                "runs_count": len(job.get("runs", [])),
+                "source_available": bool(history.resolve_source_video(job_id, DATA_DIR)),
+            })
+        return {"jobs": jobs}
+
+    def history_detail(self, job_id):
+        job = history.load_job(job_id, DATA_DIR)
+        if not job:
+            return {"error": "not found"}
+        video = history.resolve_source_video(job_id, DATA_DIR)
+        shots_all = history.ensure_thumbs(job_id, DATA_DIR, video_path=video)
+        if not shots_all:
+            shots_all = history.load_shots(job_id, DATA_DIR)
+        units = history.load_units(job_id, DATA_DIR)
+        run = job.get("current_run", 0)
+        stage1 = history.load_stage1(job_id, run, DATA_DIR)
+        stage2 = history.load_stage2(job_id, run, DATA_DIR)
+
+        shot_units = {}
+        for u in units:
+            for sid in u.get("shot_ids", []):
+                shot_units.setdefault(sid, []).append(u["unit_id"])
+
+        shots_out = []
+        for s in shots_all:
+            rec = dict(s)
+            rec["unit_ids"] = shot_units.get(s["shot_id"], [])
+            rec["thumb"] = history.thumb_data_url(job_id, s["shot_id"], DATA_DIR)
+            shots_out.append(rec)
+
+        units_out = []
+        for u in units:
+            rec = dict(u)
+            rec["description"] = stage1.get(str(u["unit_id"]), {}).get("description", "")
+            rec["ad_sentence"] = stage2.get(str(u["unit_id"]), "")
+            units_out.append(rec)
+
+        runs = [history.load_run_meta(job_id, r, DATA_DIR)
+                for r in job.get("runs", [])]
+        return {
+            "job": {"created_at": job.get("created_at", ""),
+                    "filename": job.get("filename", ""),
+                    "video_type": job.get("video_type", ""),
+                    "current_run": run,
+                    "use_context_extender": job.get("use_context_extender")},
+            "shots": shots_out,
+            "units": units_out,
+            "runs": runs,
+            "source_available": bool(video),
+            "desktop": True,
+        }
+
+    def reprocess_history(self, job_id, shot_ids, options):
+        """Re-describe the units of the selected shots, then re-run stage 2."""
+        if self._active_task_id is not None:
+            return {"task_id": None, "status": "busy",
+                    "error": "A task is already processing. Wait for it to complete before starting another."}
+        units = history.load_units(job_id, DATA_DIR)
+        selected = set(int(x) for x in (shot_ids or []))
+        selected_units = {u["unit_id"] for u in units
+                          if any(s in selected for s in u.get("shot_ids", []))}
+        if not selected_units:
+            return {"task_id": None, "status": "error",
+                    "error": "Selection maps to no AD units"}
+        task_id = str(uuid.uuid4())
+        self.processing_status[task_id] = {"status": "processing", "step": "initializing"}
+        thread = threading.Thread(
+            target=self._reprocess_task,
+            args=(task_id, job_id, sorted(selected_units), options),
+            daemon=True)
+        thread.start()
+        return {"task_id": task_id, "status": "started"}
+
+    def _reprocess_task(self, task_id, job_id, selected_unit_ids, options):
+        status = self.processing_status[task_id]
+        extractors = {
+            "base": self._extract_frames,
+            "context_shots": self._get_context_shots,
+            "context": self._extract_frames_with_context,
+        }
+        history.reprocess_task(
+            task_id, job_id, selected_unit_ids, options, DATA_DIR,
+            status, logger, extractors=extractors, emit=self.emit_progress,
+            acquire=self._try_acquire_task, release=self._release_task)
+
+    def delete_history(self, job_id):
+        import shutil
+        job_dir = history.job_dir(job_id, DATA_DIR)
+        if not os.path.isdir(job_dir):
+            return {"ok": False}
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return {"ok": True}
+
+    def reveal_run(self, job_id, run):
+        """Open a run's folder in Explorer."""
+        d = history.run_dir(job_id, run, DATA_DIR)
+        if not os.path.isdir(d):
+            return False
+        os.startfile(d)
+        return True
 
 
 def main():

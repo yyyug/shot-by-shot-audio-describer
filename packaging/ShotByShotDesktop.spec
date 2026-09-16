@@ -44,6 +44,7 @@ COMMON_HIDDEN = [
     "processing.film_grammar",
     "processing.character_recognizer",
     "processing.vtt_writer",
+    "processing.history_engine",
     "scenedetect",
     "cv2",
     "pandas",

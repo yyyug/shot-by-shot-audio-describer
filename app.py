@@ -24,6 +24,7 @@ from processing.llm_summarizer import batch_summarize, estimate_word_limit, test
 from processing.film_grammar import get_effective_shot_scale, select_prompt_variant
 from processing.character_recognizer import detect_faces, extract_face_embeddings, cluster_faces
 from processing.vtt_writer import write_vtt
+from processing import history_engine as history
 
 # Lazy import to mirror vlm_describer/llm_summarizer (also keeps the frozen
 # PyArmor builds from resolving a private module at import time).
@@ -237,6 +238,21 @@ def process_video_task(task_id, video_path, options):
     try:
         backend = options.get("backend", "gemini")
         api_key = options.get("api_key") or options.get("gemini_key")        
+        # Archive the upload into the job history folder: reprocess ("重生執行")
+        # needs the source video later, so it is kept on success instead of
+        # being deleted (remaining video processing below uses the archive).
+        filename = os.path.basename(video_path)
+        if filename.startswith(task_id + "_"):
+            filename = filename[len(task_id) + 1:]
+        ext = os.path.splitext(filename)[1] or ".mp4"
+        history.create_job(
+            task_id, filename, DATA_DIR,
+            video_type=options.get("video_type", "movie"),
+            gap_detection_enabled=bool(options.get("use_whisper", True)),
+            use_context_extender=bool(options.get("use_context_extender", False)),
+        )
+        video_path = history.archive_source_video(task_id, video_path, ext, DATA_DIR)
+        logger.info(f"Task {task_id}: archived source -> {video_path}")
         # Get video duration for progress display
         import cv2
         cap = cv2.VideoCapture(video_path)
@@ -255,6 +271,7 @@ def process_video_task(task_id, video_path, options):
 
         shots = detect_shots(video_path, callback=shot_progress)
         status["shots_count"] = len(shots)
+        history.save_shots(task_id, shots, DATA_DIR)
         logger.info(f"Task {task_id}: {len(shots)} shots detected")
         status["progress"] = 20
         status["detail"] = f"Found {len(shots)} shots"
@@ -278,6 +295,7 @@ def process_video_task(task_id, video_path, options):
             status["detail"] = "Skipped"
             logger.info(f"Task {task_id}: transcription disabled by user")
         status["progress"] = 30
+        history.save_subtitles(task_id, subtitles, DATA_DIR)
 
         # Build AD units: dialogue-gap intervals when transcription succeeded,
         # otherwise one unit per shot (existing behavior)
@@ -320,6 +338,10 @@ def process_video_task(task_id, video_path, options):
         status["detail"] = f"{len(units)} AD units to describe ({'dialogue-gap' if gap_detection_active else 'shot-based'})"
         status["progress"] = 40
         logger.info(f"Task {task_id}: built {len(units)} AD units (mode={'dialogue-gap' if gap_detection_active else 'shot-based'})")
+        history.save_units(task_id, units, DATA_DIR)
+        history.begin_run(task_id, 0, DATA_DIR, kind="initial",
+                          gap_detection_active=gap_detection_active)
+        history.set_current_run(task_id, 0, DATA_DIR)
 
         # Character detection (optional) - parity with desktop: stub only
         if options.get("use_character_bank"):
@@ -360,10 +382,12 @@ def process_video_task(task_id, video_path, options):
                                            openai_model=options.get("openai_model"),
                                            usage_acc=stage1_usage)
                     descriptions_dict[unit["unit_id"]] = desc
+                    history.record_unit(task_id, 0, DATA_DIR, unit, desc)
                     logger.info(f"Task {task_id}: unit {i+1} completed ({len(desc)} chars)")
                     status["detail"] = f"Described unit {i+1}/{len(units)}"
                 except Exception as e:
                     descriptions_dict[unit["unit_id"]] = ""
+                    history.record_unit(task_id, 0, DATA_DIR, unit, "")
                     status["detail"] = f"Unit {i+1} failed: {str(e)[:50]}"
                     logger.error(f"Task {task_id}: unit {i+1}/{len(units)} failed: {e}", exc_info=True)
                     if e is not None:
@@ -452,13 +476,17 @@ def process_video_task(task_id, video_path, options):
                     write_vtt(os.path.join(DATA_DIR, vtt_filename), output_df.to_dict("records"))
                     status["vtt_path"] = vtt_filename
 
+                    # History snapshot for this (initial) run. Root copies are
+                    # already written above, so no mirroring is needed here.
+                    history.save_stage2(task_id, 0, DATA_DIR, ad_sentence_map)
+                    history.write_run_files(
+                        task_id, 0, DATA_DIR, stage1_results, stage2_results,
+                        ad_sentence_map, units, mirror_root=False)
+                    history.update_run(task_id, 0, DATA_DIR,
+                                       status="completed", stage1_count=success_count,
+                                       stage2_count=len(ad_sentence_map))
+
                     logger.info(f"Task {task_id}: completed - outputs {timestamp}_DetailsDescription.csv / {timestamp}_AD.csv / {timestamp}-final.csv / {timestamp}-final.vtt")
-                    # Remove the uploaded copy on success (desktop reads in place; the
-                    # upload is only a transfer artifact). Keep it on failure for debugging.
-                    try:
-                        os.remove(video_path)
-                    except OSError:
-                        pass
                 except Exception as stage2_err:
                     # Stage 2 failed (e.g. API quota exhausted mid-run, or an
                     # auth/config/network problem). Diagnose the actual cause
@@ -472,11 +500,17 @@ def process_video_task(task_id, video_path, options):
                         category, _ac.quote_error_detail(stage2_err)
                     )
                     status["partial"] = True
+                    history.update_run(task_id, 0, DATA_DIR,
+                                       status="failed", stage1_count=success_count)
                     logger.error(f"Task {task_id}: stage 2 failed (cause={category}) but stage-1 results kept: {stage2_err}")
         else:
             # No API key or stage 2 explicitly skipped: only stage-1 CSV exists.
             status["status"] = "completed"
             status["progress"] = 100
+            history.write_run_files(task_id, 0, DATA_DIR, stage1_results, None,
+                                    {}, units, mirror_root=False)
+            history.update_run(task_id, 0, DATA_DIR,
+                               status="completed", stage1_count=success_count)
             logger.info(f"Task {task_id}: completed (stage 2 not run) - outputs {timestamp}_DetailsDescription.csv")
     except Exception as e:
         status["status"] = "failed"
@@ -571,6 +605,188 @@ def download(task_id):
         return jsonify({"error": "No downloadable file for this stage"}), 404
     return send_file(os.path.join(DATA_DIR, filename),
                      as_attachment=True, download_name=filename)
+
+
+# ---------------------------------------------------------------------------
+# History ("重生執行")
+# ---------------------------------------------------------------------------
+
+_DETAIL_KINDS = {"stage1": "DetailsDescription.csv",
+                 "ad": "AD.csv",
+                 "final": "final.csv",
+                 "vtt": "final.vtt"}
+
+
+def _job_summary(job):
+    job_id = job["job_id"]
+    shots = history.load_shots(job_id, DATA_DIR)
+    units = history.load_units(job_id, DATA_DIR)
+    run_meta = history.load_run_meta(job_id, job.get("current_run", 0), DATA_DIR)
+    return {
+        "job_id": job_id,
+        "filename": job.get("filename", ""),
+        "created_at": job.get("created_at", ""),
+        "shots_count": len(shots),
+        "units_count": len(units),
+        "current_run": job.get("current_run", 0),
+        "run_status": run_meta.get("status", "running"),
+        "runs_count": len(job.get("runs", [])),
+        "source_available": bool(history.resolve_source_video(job_id, DATA_DIR)),
+    }
+
+
+def _history_detail(job_id):
+    """Full job detail for the UI: shots, units (+current descriptions)."""
+    job = history.load_job(job_id, DATA_DIR)
+    if not job:
+        return None
+    video = history.resolve_source_video(job_id, DATA_DIR)
+    history.ensure_thumbs(job_id, DATA_DIR, video_path=video)
+    shots = history.load_shots(job_id, DATA_DIR)
+    units = history.load_units(job_id, DATA_DIR)
+    run = job.get("current_run", 0)
+    stage1 = history.load_stage1(job_id, run, DATA_DIR)
+    stage2 = history.load_stage2(job_id, run, DATA_DIR)
+
+    shot_units = {}
+    for u in units:
+        for sid in u.get("shot_ids", []):
+            shot_units.setdefault(sid, []).append(u["unit_id"])
+
+    units_out = []
+    for u in units:
+        rec = dict(u)
+        rec["description"] = stage1.get(str(u["unit_id"]), {}).get("description", "")
+        rec["ad_sentence"] = stage2.get(str(u["unit_id"]), "")
+        units_out.append(rec)
+
+    shots_out = []
+    for s in shots:
+        rec = dict(s)
+        rec["unit_ids"] = shot_units.get(s["shot_id"], [])
+        shots_out.append(rec)
+
+    runs = []
+    for r in job.get("runs", []):
+        runs.append(history.load_run_meta(job_id, r, DATA_DIR))
+
+    return {
+        "job": {"created_at": job.get("created_at", ""),
+                "filename": job.get("filename", ""),
+                "video_type": job.get("video_type", ""),
+                "current_run": run,
+                "gap_detection_enabled": job.get("gap_detection_enabled"),
+                "use_context_extender": job.get("use_context_extender")},
+        "shots": shots_out,
+        "units": units_out,
+        "runs": runs,
+        "source_available": bool(video),
+        "thumb_base": f"/history/{job_id}/thumb/",
+        "download_base": f"/history/{job_id}/file",
+    }
+
+
+@app.route('/history')
+def history_index():
+    return jsonify({"jobs": [_job_summary(j) for j in history.list_jobs(DATA_DIR)]})
+
+
+@app.route('/history/<job_id>')
+def history_detail(job_id):
+    detail = _history_detail(job_id)
+    if not detail:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(detail)
+
+
+@app.route('/history/<job_id>/thumb/<int:shot_id>')
+def history_thumb(job_id, shot_id):
+    p = history.thumb_path(job_id, shot_id, DATA_DIR)
+    if not os.path.isfile(p):
+        return jsonify({"error": "not found"}), 404
+    return send_file(p, mimetype="image/jpeg")
+
+
+@app.route('/history/<job_id>/file')
+def history_file(job_id):
+    run = request.args.get("run", type=int)
+    kind = request.args.get("kind")
+    if run is None or kind not in _DETAIL_KINDS:
+        return jsonify({"error": "bad request"}), 400
+    path = history.run_file(job_id, run, DATA_DIR, _DETAIL_KINDS[kind])
+    if not os.path.isfile(path):
+        return jsonify({"error": "not found"}), 404
+    job = history.load_job(job_id, DATA_DIR) or {}
+    stem = os.path.splitext(job.get("filename", "run"))[0] or "run"
+    return send_file(path, as_attachment=True,
+                     download_name=f"{stem}_run{run}_{_DETAIL_KINDS[kind]}")
+
+
+@app.route('/history/<job_id>', methods=['DELETE'])
+def history_delete(job_id):
+    job_dir = history.job_dir(job_id, DATA_DIR)
+    if not os.path.isdir(job_dir):
+        return jsonify({"error": "not found"}), 404
+    import shutil
+    shutil.rmtree(job_dir, ignore_errors=True)
+    logger.info(f"Deleted history job {job_id}")
+    return jsonify({"ok": True})
+
+
+def _reprocess_web_thread(task_id, job_id, selected_unit_ids, options):
+    status = {"status": "processing", "step": "initializing", "progress": 0}
+    processing_status[task_id] = status
+    extractors = {
+        "base": extract_frames_base64,
+        "context_shots": _get_context_shots,
+        "context": _extract_frames_with_context,
+    }
+    history.reprocess_task(
+        task_id, job_id, selected_unit_ids, options, DATA_DIR,
+        status, logger, extractors=extractors, emit=None,
+        acquire=_try_acquire_task, release=_release_task)
+
+
+@app.route('/history/<job_id>/reprocess', methods=['POST'])
+def reprocess_route(job_id):
+    job = history.load_job(job_id, DATA_DIR)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    data = request.get_json(silent=True) or {}
+    shot_ids = [int(x) for x in (data.get("shot_ids") or [])]
+    if not shot_ids:
+        return jsonify({"error": "Please select at least one shot"}), 400
+    selected = set(shot_ids)
+    selected_units = set()
+    for u in history.load_units(job_id, DATA_DIR):
+        if any(s in selected for s in u.get("shot_ids", [])):
+            selected_units.add(u["unit_id"])
+    if not selected_units:
+        return jsonify({"error": "Selection maps to no AD units"}), 400
+
+    with _active_task_lock:
+        if _active_task_id is not None:
+            return jsonify({"error": "A task is already processing. Wait for it to complete before starting another."}), 409
+
+    task_id = str(uuid.uuid4())
+    options = {
+        "backend": data.get("backend", "gemini"),
+        "api_key": data.get("api_key") or data.get("gemini_key"),
+        "openai_url": data.get("openai_url"),
+        "openai_model": data.get("openai_model"),
+        "video_type": data.get("video_type", job.get("video_type", "movie")),
+        "custom_opening": (data.get("custom_opening") or "").strip() or None,
+        "use_context_extender": bool(data.get("use_context_extender",
+                                               job.get("use_context_extender", False))),
+        "skip_stage2": bool(data.get("skip_stage2", False)),
+    }
+    threading.Thread(target=_reprocess_web_thread,
+                     args=(task_id, job_id, sorted(selected_units), options),
+                     daemon=True).start()
+    logger.info(f"Job {job_id}: reprocess started task {task_id} "
+                f"(units={sorted(selected_units)}, backend={options['backend']})")
+    return jsonify({"task_id": task_id, "status": "started"})
+
 
 if __name__ == '__main__':
     app.run(debug=False, port=5000)
