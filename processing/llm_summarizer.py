@@ -1,5 +1,5 @@
 """
-LLM Summarizer - supports Gemini, OpenRouter, and OpenAI backends
+LLM Summarizer - supports Gemini, Qwen, DeepSeek, and OpenAI-compatible backends
 """
 import os
 import re
@@ -21,8 +21,11 @@ except ImportError:
         return f"Summarize: {text_pred} in {word_limit} words."
 
 # API URLs
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+DEEPSEEK_API_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-flash"
+QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+QWEN_MODEL = "qwen3.8-flash"
 
 # Shared API-call helpers (pause-on-quota, provider backoff, 401 give-up).
 # Imported lazily via _get_api_common() at call time so both frozen builds
@@ -148,44 +151,21 @@ def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry
             raise RuntimeError(f"Gemini API failed: {e}")
 
 
-def _call_openrouter(prompt, api_key, model="qwen/qwen3.7-plus", max_retries=3, retry_delay=1.0, usage_acc=None):
-    """Call OpenRouter API."""
-    common = _get_api_common()
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
-        "temperature": 0.6
-    }
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    logger.info(f"OpenRouter API: url={OPENROUTER_API_URL}, model={model}")
-    for attempt in range(max_retries):
-        try:
-            common.wait_if_paused()
-            logger.info(f"OpenRouter API attempt {attempt+1}/{max_retries} -> POST {OPENROUTER_API_URL} (model={model})")
-            response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            if usage_acc is not None:
-                usage_acc.add(data.get("usage"))
-            return (data["choices"][0]["message"]["content"] or "").strip()
-        except requests.exceptions.RequestException as e:
-            status = common.extract_status(e)
-            logger.warning(f"OpenRouter API attempt {attempt+1} failed (status={status or 'n/a'}) url={OPENROUTER_API_URL} model={model}: {e}")
-            body = common.response_body(e)
-            if body:
-                logger.warning(f"OpenRouter API response body: {body}")
-            if common.classify_crisis(status):
-                common.pause_all()
-                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
-                common.pause_and_wait(delay)
-            if common.should_give_up(status):
-                raise RuntimeError(f"OpenRouter API failed (permanent error, status {status}): {e}")
-            if attempt < max_retries - 1:
-                delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
-                time.sleep(delay)
-                continue
-            raise RuntimeError(f"OpenRouter API failed: {e}")
+def _apply_no_thinking(payload, base_url):
+    """Disable chain-of-thought for the reasoning-capable providers we route to.
+
+    Qwen/DashScope and DeepSeek run thinking by default and burn the output
+    budget on hidden reasoning; OpenRouter relays any reasoning-capable model.
+    Unknown OpenAI-compatible hosts are left untouched so we never inject a
+    field a strict provider rejects."""
+    if not base_url:
+        return
+    if base_url.startswith(QWEN_API_URL) or "dashscope" in base_url:
+        payload["enable_thinking"] = False
+    elif base_url.startswith(DEEPSEEK_API_URL) or "deepseek" in base_url:
+        payload["thinking"] = {"type": "disabled"}
+    elif "openrouter" in base_url:
+        payload["reasoning"] = {"enabled": False}
 
 
 def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay=1.0, base_url=None, usage_acc=None):
@@ -194,12 +174,13 @@ def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
         "temperature": 0.6
     }
-    # Reasoning-mode models (DeepSeek V4 thinking by default, QwQ, etc.) share
-    # the max_tokens budget between chain-of-thought and the final answer; give
-    # them room so message.content isn't left empty (HTTP 200).
+    # No max_tokens: reasoning-mode models (qwen3.8-flash, DeepSeek thinking,
+    # etc.) share the output budget between chain-of-thought and the final
+    # answer; a small cap gets burned on reasoning and content comes back
+    # empty (HTTP 200). Let the provider use its own default instead.
+    _apply_no_thinking(payload, base_url)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     url = f"{base_url}/chat/completions" if base_url else OPENAI_API_URL
     logger.info(f"OpenAI API: url={url}, model={model}")
@@ -303,9 +284,12 @@ def test_connection(api_key, backend="gemini-3.7-flash", openai_url=None, openai
                 return False, "Empty response (possible safety block or quota issue)"
             return True, f"Connection OK - {backend} replied: {text[:50]}"
 
-        if backend == "openrouter":
-            url = OPENROUTER_API_URL
-            model = openai_model or "qwen/qwen3.7-plus"
+        if backend == "qwen":
+            url = QWEN_API_URL + "/chat/completions"
+            model = openai_model or QWEN_MODEL
+        elif backend == "deepseek":
+            url = DEEPSEEK_API_URL + "/chat/completions"
+            model = openai_model or DEEPSEEK_MODEL
         else:  # openai-compatible
             base = (openai_url or "https://api.openai.com/v1").rstrip("/")
             url = base + "/chat/completions"
@@ -406,9 +390,12 @@ def summarize_to_ad(
     if backend.startswith("gemini"):
         model = backend  # Use the full model name from dropdown
         ad_text = _call_gemini(prompt, api_key, model, max_retries, retry_delay, usage_acc=usage_acc)
-    elif backend == "openrouter":
-        model = model or "qwen/qwen3.7-plus"
-        ad_text = _call_openrouter(prompt, api_key, model, max_retries, retry_delay, usage_acc=usage_acc)
+    elif backend == "qwen":
+        model = QWEN_MODEL
+        ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay, base_url=QWEN_API_URL, usage_acc=usage_acc)
+    elif backend == "deepseek":
+        model = DEEPSEEK_MODEL
+        ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay, base_url=DEEPSEEK_API_URL, usage_acc=usage_acc)
     elif backend in ("openai", "openai-compatible"):
         model = openai_model or model or "gpt-latest"
         ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay, base_url=openai_url, usage_acc=usage_acc)

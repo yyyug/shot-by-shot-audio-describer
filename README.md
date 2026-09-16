@@ -13,7 +13,7 @@ This tool processes video files to generate shot-by-shot analysis with:
 - Audio transcription + dialogue gap detection (SenseVoice / FunASR)
 - **Character bank** — face detection & clustering across shots
 - **Context extension** — past/future shot context for AD placement
-- AI-powered video descriptions — **Multi-backend**: Gemini 2.5 Flash, OpenRouter (Qwen 2.5 VL 7B), or local Qwen (Unsloth bnb-4bit)
+- AI-powered video descriptions — **Multi-backend**: Gemini, Qwen (DashScope), DeepSeek, or any OpenAI-compatible endpoint
 - Audio description summarization (Stage 2 LLM)
 
 ### Prerequisites
@@ -23,9 +23,9 @@ This tool processes video files to generate shot-by-shot analysis with:
 - SenseVoice (FunASR) for transcription, optional
 
 **Backend-specific:**
-- **OpenRouter**: API key
 - **Gemini**: API key + `pip install google-generativeai`
-- **Local Qwen**: GPU (T4 x2 recommended) + `pip install unsloth bitsandbytes`
+- **Qwen / DeepSeek**: API key for the respective endpoint
+- **OpenAI-compatible**: any base URL + model name (e.g. OpenRouter, a local vLLM server)
 
 ### Distribution / Installer (recommended for end users)
 
@@ -73,8 +73,9 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 ```
 
 Notes:
-- The installer is large (~1.5–2GB) because the SenseVoice model (~1GB) is
-  bundled for offline use — this is the trade-off for a single offline installer.
+- The bundle is large (~1.5–2GB) because the int8-quantized SenseVoice model
+  (~235MB, `model_quant.onnx`) is bundled for offline use — this is the trade-off
+  for a single offline installer with no download on first run.
 - The packaged desktop app stores outputs and the log in
   `%LOCALAPPDATA%\ShotByShot\` (writable even under Program Files).
 - Only `models/sensevoice/` is bundled. Older unrelated files in `models/`
@@ -103,12 +104,18 @@ Hard-won pins / gotchas:
 - **google-genai** and **num2words** are runtime deps of
   `processing/vlm_describer.py`, `processing/llm_summarizer.py` and
   `stage2/promptloader.py`.
-- **torchvision** is imported at top level by `processing/film_grammar.py`,
-  so it must be installed even though only CPU transforms are used.
-- With `-Obfuscate`, PyArmor encrypts `desktop.py` + `processing/*`, which makes
-  their imports invisible to PyInstaller's static analysis — every third-party
-  import of those modules must be listed in `hiddenimports`
-  (`packaging/ShotByShotDesktop.spec`).
+- **PyTorch is not bundled** (and not needed at runtime):
+  `processing/film_grammar.py` now imports `torch`/`torchvision` lazily, and the
+  DINOv2 shot-scale / thread-structure helpers they serve are never called by
+  the pipeline (shot scales come straight from the UI). The spec excludes the
+  whole PyTorch stack, shrinking the portable build from a ~90k-file tree to
+  ~1,900 files / ~1 GB. torch stays in `requirements-cpu.txt` for dev and tests.
+- With `-Obfuscate`, PyArmor encrypts `desktop.py`, `webapp_entry.py`, `app.py`
+  and `processing/*`. Their imports become invisible to PyInstaller's static
+  analysis, so **every** import of those modules — including stdlib submodules
+  such as `logging.handlers` and `urllib.request` — must be listed in
+  `hiddenimports` (`packaging/ShotByShotDesktop.spec`, see `STDLIB_HIDDEN`).
+  Miss one and the frozen app exits immediately with `ModuleNotFoundError`.
 
 ### Troubleshooting the packaged desktop app
 
@@ -116,7 +123,7 @@ Hard-won pins / gotchas:
   Python exceptions are written here (excepthook). If a crash produces **no**
   log entry, it died at native level (WebView2/COM), not in Python code.
 - **First launch on a new machine** may be slow or crash once: Windows Defender
-  scans the ~90k-file tree and WebView2 initializes its user profile on first
+  scans the bundle and WebView2 initializes its user profile on first
   run. Subsequent launches are normal.
 - **WebView2 Runtime required** (pre-installed on Windows 11). The Setup.exe
   installs it automatically when missing; portable-zip users should download it
@@ -167,8 +174,8 @@ Open http://localhost:5000 in your browser.
 **Web Interface Options:**
 | Option | Description |
 |--------|-------------|
-| **LLM Backend** | OpenRouter or Gemini |
-| **API Key** | OpenRouter or Gemini key (auto-toggles) |
+| **LLM Backend** | Gemini, Qwen, DeepSeek, or OpenAI-compatible |
+| **API Key** | Key for the selected backend (auto-toggles) |
 | **Enable Transcription** | SenseVoice transcription and dialogue-gap-based AD interval detection |
 | **Language** | Language code (en, zh, etc.) or auto-detect |
 | **Character Bank** | Face detection + clustering per shot |
@@ -181,10 +188,10 @@ Open http://localhost:5000 in your browser.
 
 ```bash
 # Full pipeline
-python run_processing.py video.mp4 -o output.csv --openrouter-key YOUR_API_KEY
+python run_processing.py video.mp4 -o output.csv --api-key YOUR_API_KEY
 
 # Skip steps
-python run_processing.py video.mp4 --skip-whisper --openrouter-key YOUR_API_KEY
+python run_processing.py video.mp4 --skip-whisper --api-key YOUR_API_KEY
 python run_processing.py video.mp4 --skip-vlm
 python run_processing.py video.mp4 --skip-whisper --skip-vlm --skip-stage2
 python run_processing.py video.mp4 --context   # include surrounding shots in VLM prompts
@@ -216,8 +223,8 @@ app.py  ──  Flask web server
 ├── processing/character_recognizer.py  ✅ Wired (web + notebook)
 ├── processing/context_extender.py      ✅ Wired (web)
 ├── processing/film_grammar.py          ✅ Wired (prompt variants)
-├── processing/vlm_describer.py         ✅ Wired (OpenRouter)
-├── processing/llm_summarizer.py        ✅ Wired (OpenRouter)
+├── processing/vlm_describer.py         ✅ Wired (Qwen / DeepSeek / OpenAI-compatible)
+├── processing/llm_summarizer.py        ✅ Wired (Qwen / DeepSeek / OpenAI-compatible)
 ├── processing/csv_merger.py            ✅ Wired
 ├── stage1/promptloader.py              ✅ Wired (via vlm_describer)
 ├── stage2/promptloader.py              ✅ Wired (via llm_summarizer)
@@ -237,7 +244,7 @@ app.py  ──  Flask web server
 - 音訊轉錄及對話空隙偵測（SenseVoice / FunASR）
 - **角色庫** — 全鏡頭人臉檢測與聚類
 - **上下文擴展** — 前後鏡頭上下文用於口述影像配置
-- AI 影片描述 — **多後端**：Gemini 2.5 Flash、OpenRouter (Qwen 2.5 VL 7B)、或本地 Qwen (Unsloth bnb-4bit)
+- AI 影片描述 — **多後端**：Gemini、Qwen（DashScope）、DeepSeek，或任何 OpenAI-compatible 端點
 - 口述影像摘要（Stage 2 LLM）
 
 ### 系統要求
@@ -247,9 +254,9 @@ app.py  ──  Flask web server
 - SenseVoice（FunASR，用於轉錄，可選）
 
 **各後端要求：**
-- **OpenRouter**：API 金鑰
 - **Gemini**：API 金鑰 + `pip install google-generativeai`
-- **本地 Qwen**：GPU（建議 T4 x2）+ `pip install unsloth bitsandbytes`
+- **Qwen / DeepSeek**：對應端點的 API 金鑰
+- **OpenAI-compatible**：任意 Base URL + model 名稱（例如 OpenRouter、本地 vLLM）
 
 ### 分發 / 安裝（推薦給一般使用者）
 
@@ -294,7 +301,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 ```
 
 注意事項：
-- 安裝檔約 1.5–2GB，因為 SenseVoice 模型（約 1GB）隨附在內，以便離線使用。
+- 安裝檔約 1.5–2GB，因為 int8 量化版 SenseVoice 模型（約 235MB，`model_quant.onnx`）隨附在內，以便離線使用。
 - 打包版桌面應用程式的輸出與 log 放在 `%LOCALAPPDATA%\ShotByShot\`（Program Files 下也可寫入）。
 - 只打包 `models/sensevoice/`。`models/` 下其他舊檔案（`whisper/`、`shot_scale_ckpt.pth`）
   **目前管線未使用**（鏡頭偵測用 PySceneDetect，不需模型檔），故排除。
@@ -320,18 +327,24 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
   但要讓人臉偵測正常運作請維持 4.x。
 - **google-genai** 與 **num2words** 是 `processing/vlm_describer.py`、
   `processing/llm_summarizer.py`、`stage2/promptloader.py` 的執行期依賴。
-- **torchvision** 被 `processing/film_grammar.py` 在頂層 import，
-  即使只用 CPU transforms 也必須安裝。
-- 加 `-Obfuscate` 時，PyArmor 會加密 `desktop.py` + `processing/*`，
-  PyInstaller 的靜態分析看不到加密模組的 import——這些模組用到的所有第三方套件
-  都必須列在 `packaging/ShotByShotDesktop.spec` 的 `hiddenimports`。
+- **不再打包 PyTorch**（執行期也不需要）：`processing/film_grammar.py` 已改成
+  惰性 import `torch`/`torchvision`，而它們支撐的 DINOv2 鏡頭景別／thread 預測
+  目前管線根本不會呼叫（景別直接由 UI 提供）。spec 已排除整包 PyTorch，
+  可攜版因此從約 9 萬個檔案縮到約 1,900 檔／約 1GB。torch 仍保留在
+  `requirements-cpu.txt` 供開發與測試。
+- 加 `-Obfuscate` 時，PyArmor 會加密 `desktop.py`、`webapp_entry.py`、`app.py`
+  與 `processing/*`。PyInstaller 的靜態分析看不到這些模組的 import，
+  因此**所有**用到的模組——包含標準庫子模組如 `logging.handlers`、
+  `urllib.request`——都必須列在 `packaging/ShotByShotDesktop.spec` 的
+  `hiddenimports`（見 `STDLIB_HIDDEN`）。漏掉一個，打包版會立刻以
+  `ModuleNotFoundError` 結束。
 
 ### 打包版桌面應用疑難排解
 
 - **Log 位置**：`%LOCALAPPDATA%\ShotByShot\shot_by_shot.log`。所有未捕捉的
   Python 例外都會寫進這裡（excepthook）。若崩潰時 log **沒有**新內容，
   代表是原生層級崩潰（WebView2/COM），不是 Python 程式碼問題。
-- **新機器第一次啟動**可能較慢或崩潰一次：Windows Defender 要掃描約 9 萬個檔案，
+- **新機器第一次啟動**可能較慢或崩潰一次：Windows Defender 要掃描整包檔案，
   WebView2 也要首次建立使用者設定檔；第二次之後即正常。
 - **需要 Microsoft Edge WebView2 Runtime**（Windows 11 內建）。Setup.exe 偵測到
   缺少時會自動安裝；可攜版 zip 使用者請自行到
@@ -378,8 +391,8 @@ python app.py
 **網頁介面選項：**
 | 選項 | 說明 |
 |------|------|
-| **LLM Backend** | OpenRouter 或 Gemini |
-| **API Key** | OpenRouter 或 Gemini 金鑰（自動切換） |
+| **LLM Backend** | Gemini、Qwen、DeepSeek 或 OpenAI-compatible |
+| **API Key** | 對應後端的金鑰（自動切換） |
 | **啟用轉錄** | SenseVoice 轉錄與對話空隙為基礎的 AD 區間偵測 |
 | **Language** | 語言代碼（en, zh 等）或自動偵測 |
 | **Character Bank** | 每鏡頭人臉檢測與聚類 |
@@ -392,10 +405,10 @@ python app.py
 
 ```bash
 # 完整流程
-python run_processing.py video.mp4 -o output.csv --openrouter-key YOUR_API_KEY
+python run_processing.py video.mp4 -o output.csv --api-key YOUR_API_KEY
 
 # 跳過部分步驟
-python run_processing.py video.mp4 --skip-whisper --openrouter-key YOUR_API_KEY
+python run_processing.py video.mp4 --skip-whisper --api-key YOUR_API_KEY
 python run_processing.py video.mp4 --skip-vlm
 python run_processing.py video.mp4 --skip-whisper --skip-vlm --skip-stage2
 ```

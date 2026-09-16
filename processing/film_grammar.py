@@ -2,16 +2,39 @@
 Film grammar utilities - supplements original repo's film_grammar modules.
 Includes DINOv2-based shot scale classification and thread structure prediction.
 """
+from __future__ import annotations
+
 import sys
 from typing import List, Dict, Optional, Tuple
 from functools import partial
 from pathlib import Path
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from PIL import Image
+
+# PyTorch (and torchvision / decord) are only needed by the DINOv2 shot-scale
+# and thread-structure helpers, which the shipping pipeline never calls - shot
+# scales are supplied directly by the UI. Import torch lazily so the packaged
+# build can ship without the multi-hundred-MB torch tree.
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    _TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    nn = None
+    F = None
+    _TORCH_AVAILABLE = False
+
+
+def _require_torch():
+    if not _TORCH_AVAILABLE:
+        raise RuntimeError(
+            "PyTorch is required for DINOv2 shot-scale / thread-structure "
+            "prediction, but it is not available in this build."
+        )
+
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +143,7 @@ def load_dinov2_model(
         (model, autocast_dtype) – the backbone in eval mode on the current device
         and the dtype to use for mixed-precision inference.
     """
+    _require_torch()
     weights_path = weights_path or _DEFAULT_DINOV2_WEIGHTS
     config_path = config_path or _DINOV2_CONFIG
 
@@ -132,7 +156,12 @@ def load_dinov2_model(
 # Shot scale classifier
 # ---------------------------------------------------------------------------
 
-class ShotScaleClassifier(nn.Module):
+# `nn.Module` is resolved when the class is created, so fall back to `object`
+# when torch is absent; the constructor then raises a clear error instead.
+_ModuleBase = nn.Module if _TORCH_AVAILABLE else object
+
+
+class ShotScaleClassifier(_ModuleBase):
     """
     DINOv2 ViT-B/14 backbone + linear classifier head for shot scale.
 
@@ -143,11 +172,14 @@ class ShotScaleClassifier(nn.Module):
     def __init__(
         self,
         backbone: torch.nn.Module,
-        autocast_dtype: torch.dtype = torch.float16,
+        autocast_dtype: torch.dtype = None,
         feature_dim: int = 768,
         num_classes: int = 5,
     ):
+        _require_torch()
         super().__init__()
+        if autocast_dtype is None:
+            autocast_dtype = torch.float16
         self.backbone = backbone
         self.linear = nn.Linear(feature_dim, num_classes)
         nn.init.normal_(self.linear.weight, std=0.01)
@@ -169,7 +201,7 @@ class ShotScaleClassifier(nn.Module):
 def load_shot_scale_classifier(
     model_path: str,
     backbone: Optional[torch.nn.Module] = None,
-    autocast_dtype: torch.dtype = torch.float16,
+    autocast_dtype: torch.dtype = None,
     feature_dim: int = 768,
     num_classes: int = 5,
 ) -> ShotScaleClassifier:
@@ -187,6 +219,9 @@ def load_shot_scale_classifier(
     Returns:
         The classifier in eval mode.
     """
+    _require_torch()
+    if autocast_dtype is None:
+        autocast_dtype = torch.float16
     if backbone is None:
         backbone, autocast_dtype = load_dinov2_model()
 
@@ -282,6 +317,7 @@ def classify_shot_scale_real(
     Returns:
         Predicted scale label (0–4).
     """
+    _require_torch()
     device = next(classifier.parameters()).device
     tensor = _center_crop_and_resize(frame).unsqueeze(0).to(device)
     with torch.no_grad():
@@ -302,9 +338,12 @@ def _softmax_topk(cos_sim: torch.Tensor, temperature: float, topk: int) -> torch
 
 def _build_neighbor_mask(
     h: int, w: int, size: int,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device = None,
 ) -> torch.Tensor:
     """Build a spatial locality mask for patch-wise cosine similarity."""
+    _require_torch()
+    if device is None:
+        device = torch.device("cpu")
     mask = torch.zeros(h, w, h, w)
     for i in range(h):
         for j in range(w):
@@ -348,6 +387,7 @@ def predict_threads_real(
     if len(shots) == 1:
         return [[0]]
 
+    _require_torch()
     from decord import VideoReader, cpu
 
     device = next(model.parameters()).device

@@ -18,7 +18,7 @@ FROZEN = bool(getattr(sys, "frozen", False))
 _MEIPASS = getattr(sys, "_MEIPASS", None)
 if FROZEN:
     BASE_DIR = _MEIPASS or os.path.dirname(sys.executable)
-    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(sys.executable)), "ShotByShot")
+    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(sys.executable)), "BuddyAd")
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(BASE_DIR, "outputs")

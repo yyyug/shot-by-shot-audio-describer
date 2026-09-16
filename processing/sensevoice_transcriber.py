@@ -124,13 +124,33 @@ def _write_wav_float32(path, samples, sr):
         w.writeframes(pcm.tobytes())
 
 
+def _ffmpeg_bin():
+    """Resolve ffmpeg: bundled copy (frozen app) first, then PATH."""
+    import shutil
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        for cand in (
+            os.path.join(meipass, "tools", "ffmpeg", "ffmpeg.exe"),
+            os.path.join(meipass, "ffmpeg", "ffmpeg.exe"),
+        ):
+            if os.path.isfile(cand):
+                return cand
+    return shutil.which("ffmpeg")
+
+
 def _extract_audio(video_path):
+    import subprocess
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError(
+            "ffmpeg not found. The portable app bundles it - if you are "
+            "running from source, install ffmpeg and put it on PATH."
+        )
     try:
-        import subprocess
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
         subprocess.run([
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-i", video_path, "-ar", "16000", "-ac", "1", tmp_path,
         ], check=True)
         return _read_wav_float32(tmp_path)
@@ -144,8 +164,11 @@ def _extract_audio(video_path):
 def _load_vad_segments(audio, sr, vad_model, callback=None):
     try:
         from funasr_onnx.vad_bin import Fsmn_vad
-    except ImportError:
-        raise RuntimeError("funasr-onnx not installed. Run: pip install funasr-onnx")
+    except ImportError as e:
+        raise RuntimeError(
+            f"funasr-onnx VAD backend not available ({type(e).__name__}: {e}). "
+            "Run: pip install funasr-onnx"
+        ) from e
     if callback:
         callback(0.15, "Loading VAD model...")
     vad = Fsmn_vad(model_dir=vad_model, device_id="-1", quantize=True)
@@ -193,8 +216,11 @@ def _transcribe_video_onnx(video_path, onnx_dir, vad_model, language, use_itn, c
     try:
         from funasr_onnx import SenseVoiceSmall
         from funasr_onnx.utils.postprocess_utils import rich_transcription_postprocess
-    except ImportError:
-        raise RuntimeError("funasr-onnx not installed. Run: pip install funasr-onnx")
+    except ImportError as e:
+        raise RuntimeError(
+            f"funasr-onnx not available ({type(e).__name__}: {e}). "
+            "Run: pip install funasr-onnx"
+        ) from e
 
     audio, sr = _extract_audio(video_path)
     vad_segments = _load_vad_segments(audio, sr, vad_model, callback)

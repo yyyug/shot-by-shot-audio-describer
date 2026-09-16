@@ -67,6 +67,37 @@ if (-not (Test-Path $Ico)) {
     & $VenvPython (Join-Path $Root "packaging\make_icon.py")
 }
 
+# ---------------------------------------------------------------- bundled ffmpeg
+# The ONNX transcription path extracts audio via a bundled static ffmpeg, so
+# end users do NOT need to install ffmpeg themselves. Downloaded into
+# tools\ffmpeg (gitignored) once, then packaged into _internal\tools\ffmpeg.
+$FfmpegDir = Join-Path $Root "tools\ffmpeg"
+$FfmpegExe = Join-Path $FfmpegDir "ffmpeg.exe"
+if (Test-Path $FfmpegExe) {
+    Write-Ok "Bundled ffmpeg already present: $FfmpegExe"
+} else {
+    Write-Step "Downloading static ffmpeg for bundling (~100MB, one-time)..."
+    New-Item -ItemType Directory -Path $FfmpegDir -Force | Out-Null
+    $ffZip = Join-Path (Join-Path $Root "tools") "ffmpeg-release-essentials.zip"
+    $ffUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    try {
+        Invoke-WebRequest -Uri $ffUrl -OutFile $ffZip -UseBasicParsing
+    } catch {
+        Write-Warn "ffmpeg download failed ($($_.Exception.Message))."
+        Write-Warn "Place ffmpeg.exe + ffprobe.exe in tools\ffmpeg\ manually, then re-run."
+        exit 1
+    }
+    $ffTmp = Join-Path (Join-Path $Root "tools") "ffmpeg-tmp"
+    Remove-Item $ffTmp -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $ffZip -DestinationPath $ffTmp -Force
+    $ffBin = Get-ChildItem (Join-Path $ffTmp "ffmpeg-*") -Directory | Select-Object -First 1
+    Copy-Item (Join-Path $ffBin.FullName "bin\ffmpeg.exe") $FfmpegExe -Force
+    Copy-Item (Join-Path $ffBin.FullName "bin\ffprobe.exe") (Join-Path $FfmpegDir "ffprobe.exe") -Force
+    Remove-Item $ffTmp -Recurse -Force
+    Remove-Item $ffZip -Force
+    Write-Ok "Bundled ffmpeg ready: $FfmpegExe"
+}
+
 # ---------------------------------------------------------------- obfuscate
 if ($Obfuscate) {
     $ObfDir = Join-Path $Root ".build-obf"

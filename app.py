@@ -37,7 +37,7 @@ BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 FROZEN = bool(getattr(sys, "frozen", False))
 if FROZEN:
     # Packaged app: keep user data in a writable location (Program Files is read-only)
-    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ShotByShot")
+    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "BuddyAd")
 else:
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 
@@ -236,7 +236,7 @@ def process_video_task(task_id, video_path, options):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     try:
         backend = options.get("backend", "gemini")
-        api_key = options.get("api_key") or options.get("gemini_key") or options.get("openrouter_key")        
+        api_key = options.get("api_key") or options.get("gemini_key")        
         # Get video duration for progress display
         import cv2
         cap = cv2.VideoCapture(video_path)
@@ -260,6 +260,7 @@ def process_video_task(task_id, video_path, options):
         status["detail"] = f"Found {len(shots)} shots"
         status["step"] = "transcription"
         subtitles = []
+        transcription_error = None
         if options.get("use_whisper", True):
             def trans_progress(progress, message):
                 status["detail"] = f"Transcription: {message}"
@@ -268,20 +269,25 @@ def process_video_task(task_id, video_path, options):
                 subtitles = transcribe_video(video_path, language="auto", callback=trans_progress)
                 status["detail"] = f"Transcribed {len(subtitles)} segments"
                 logger.info(f"Task {task_id}: transcribed {len(subtitles)} segments")
-            except Exception:
+            except Exception as e:
                 subtitles = []
-                status["detail"] = "Transcription failed, falling back to shot-based mode"
-                logger.warning(f"Task {task_id}: transcription failed, shot-based mode", exc_info=True)
+                transcription_error = e
+                status["detail"] = f"Transcription failed ({type(e).__name__}), falling back to shot-based mode"
+                logger.warning(f"Task {task_id}: transcription failed ({type(e).__name__}: {e}), shot-based mode", exc_info=True)
         else:
             status["detail"] = "Skipped"
+            logger.info(f"Task {task_id}: transcription disabled by user")
         status["progress"] = 30
 
-        # Build AD units: dialogue-gap intervals when transcription is enabled,
+        # Build AD units: dialogue-gap intervals when transcription succeeded,
         # otherwise one unit per shot (existing behavior)
         units = []
+        gap_detection_active = False
         if subtitles:
             ad_intervals = detect_ad_intervals(subtitles, shots, video_duration=video_duration)
+            gap_detection_active = True
             status["detail"] = f"Detected {len(ad_intervals)} dialogue-gap AD intervals"
+            logger.info(f"Task {task_id}: dialogue-gap detection ACTIVE - {len(ad_intervals)} intervals from {len(subtitles)} subtitle segments")
             for interval in ad_intervals:
                 units.append({
                     "unit_id": interval["ad_id"],
@@ -308,9 +314,12 @@ def process_video_task(task_id, video_path, options):
                 "mode": "shot",
             })
             logger.info(f"Task {task_id}: no shots detected; using full-video as single unit ({video_duration:.1f}s)")
-        status["detail"] = f"{len(units)} AD units to describe"
+        if not gap_detection_active:
+            reason = "transcription disabled" if not options.get("use_whisper", True) else f"transcription failed ({type(transcription_error).__name__})" if transcription_error else "no subtitles produced"
+            logger.warning(f"Task {task_id}: dialogue-gap detection NOT active - {reason}. Using {len(units)} per-shot units instead.")
+        status["detail"] = f"{len(units)} AD units to describe ({'dialogue-gap' if gap_detection_active else 'shot-based'})"
         status["progress"] = 40
-        logger.info(f"Task {task_id}: built {len(units)} AD units")
+        logger.info(f"Task {task_id}: built {len(units)} AD units (mode={'dialogue-gap' if gap_detection_active else 'shot-based'})")
 
         # Character detection (optional) - parity with desktop: stub only
         if options.get("use_character_bank"):
@@ -514,7 +523,7 @@ def upload_video():
     video_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{task_id}_{filename}")
     file.save(video_path)
     options = {"backend": request.form.get("backend", "gemini"),
-               "api_key": request.form.get("api_key") or request.form.get("gemini_key") or request.form.get("openrouter_key"),
+               "api_key": request.form.get("api_key") or request.form.get("gemini_key"),
                "openai_url": request.form.get("openai_url"),
                "openai_model": request.form.get("openai_model"),
                "video_type": request.form.get("video_type", "movie"),

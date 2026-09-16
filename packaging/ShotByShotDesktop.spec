@@ -50,8 +50,6 @@ COMMON_HIDDEN = [
     "numpy",
     "requests",
     "PIL",
-    "torch",
-    "torchvision",
     "sklearn.cluster",
     "sklearn.metrics",
     "sklearn.metrics.pairwise",
@@ -63,16 +61,13 @@ COMMON_HIDDEN = [
     "stage1.promptloader",
     "stage2",
     "stage2.promptloader",
-    # funasr / modelscope dynamic imports
-    "funasr",
-    "funasr.models",
-    "funasr.utils.postprocess_utils",
-    "modelscope",
-    "modelscope.pipelines",
-    # ONNX transcription backend (funasr-onnx + onnxruntime)
+    # funasr / modelscope are excluded (ONNX-only runtime); keep only the
+    # funasr-onnx backend that actually runs.
     "funasr_onnx",
     "funasr_onnx.sensevoice_bin",
     "funasr_onnx.utils",
+    "funasr_onnx.vad_bin",
+    "jieba",
     "onnxruntime",
 ]
 
@@ -90,14 +85,65 @@ if collect_all:
     except Exception:
         pass
 
-DESKTOP_HIDDEN = COMMON_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + [
+# jieba is imported at module level by funasr_onnx.utils.utils (used by the
+# ONNX transcription path). It lazily loads dict.txt + analyse/finalseg/
+# posseg/lac_small data files at runtime, so they must be bundled too - a
+# plain hiddenimport only ships the .py files and jieba fails to initialise.
+JIEBA_HIDDEN = []
+if collect_all:
+    try:
+        _JB = collect_all("jieba")
+        JIEBA_HIDDEN = list(_JB[2])
+        _ONNX_DATAS = list(_ONNX_DATAS) + list(_JB[0])
+        _ONNX_BINARIES = list(_ONNX_BINARIES) + list(_JB[1])
+    except Exception:
+        pass
+
+# PyArmor-encrypted modules are opaque to PyInstaller's static import scan, so
+# every stdlib submodule they use must be listed explicitly too - otherwise the
+# frozen app dies at startup with e.g. "No module named 'logging.handlers'".
+STDLIB_HIDDEN = [
+    "ast",
+    "base64",
+    "copy",
+    "ctypes",
+    "datetime",
+    "functools",
+    "io",
+    "json",
+    "logging",
+    "logging.handlers",
+    "math",
+    "os",
+    "pathlib",
+    "random",
+    "re",
+    "shutil",
+    "socket",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "threading",
+    "time",
+    "typing",
+    "urllib.request",
+    "uuid",
+    "warnings",
+    "wave",
+    "webbrowser",
+    "winreg",
+    "PIL.Image",
+    "werkzeug.utils",
+]
+
+DESKTOP_HIDDEN = COMMON_HIDDEN + STDLIB_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + JIEBA_HIDDEN + [
     # pywebview backends (edgtw / mshtml / cef) get picked up dynamically
     "webview",
     "webview.platforms",
     "webview.platforms.edgtw",
 ]
 
-WEB_HIDDEN = COMMON_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + [
+WEB_HIDDEN = COMMON_HIDDEN + STDLIB_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + JIEBA_HIDDEN + [
     # obfuscated webapp_entry.py's `from app import app` is invisible to
     # static analysis - pull the Flask glue module in explicitly
     "app",
@@ -115,6 +161,27 @@ EXCLUDES = [
     "PyQt6",
     "PySide2",
     "PySide6",
+    # The packaged app runs ONNX-only, and processing/film_grammar.py no longer
+    # imports torch at module scope (the DINOv2 shot-scale / thread helpers are
+    # lazily loaded and never called by the pipeline - shot scales come from the
+    # UI). Dropping the whole PyTorch stack is by far the biggest size win.
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "decord",
+    # funasr/torch-legacy extras pulled in through static analysis of the
+    # torch transcription fallback. None of these are imported at runtime.
+    "funasr",
+    "modelscope",
+    "transformers",
+    "tokenizers",
+    "safetensors",
+    "huggingface_hub",
+    "hf_xet",
+    "tiktoken",
+    "aliyunsdkcore",
+    "wandb",
+    "tensorboard",
 ]
 
 # Few-shot ground-truth AD examples used by processing/llm_summarizer at
@@ -130,17 +197,27 @@ DATA = [
     (os.path.join(PROJECT_ROOT, "templates"), "templates"),
     (os.path.join(PROJECT_ROOT, "static"), "static"),
     (os.path.join(PROJECT_ROOT, "models", "sensevoice"), os.path.join("models", "sensevoice")),
-    # funasr reads version.txt from its own package dir at import time
-    # (funasr/__init__.py); PyInstaller does not ship data files from
-    # site-packages automatically, so bundle it explicitly.
-    (os.path.join(sys.prefix, "Lib", "site-packages", "funasr", "version.txt"), os.path.join("funasr")),
 ] + GT_TRAIN_DATA
+
+# Bundled static ffmpeg (fetched by build.ps1 into tools\ffmpeg; see
+# processing/sensevoice_transcriber._ffmpeg_bin for runtime resolution).
+_FFMPEG_DIR = os.path.join(PROJECT_ROOT, "tools", "ffmpeg")
+_FFMPEG_DATA = []
+for _exe in ("ffmpeg.exe", "ffprobe.exe"):
+    _p = os.path.join(_FFMPEG_DIR, _exe)
+    if os.path.isfile(_p):
+        _FFMPEG_DATA.append((_p, os.path.join("tools", "ffmpeg")))
+if not _FFMPEG_DATA:
+    raise SystemExit(
+        "tools\\ffmpeg\\ffmpeg.exe missing - run build.ps1 to fetch the "
+        "bundled ffmpeg binary before packaging."
+    )
 
 a = Analysis(
     [DESKTOP_ENTRY],
     pathex=DESKTOP_PATH,
     binaries=(_ONNX_BINARIES or []),
-    datas=(DATA + _ONNX_DATAS),
+    datas=(DATA + _FFMPEG_DATA + _ONNX_DATAS),
     hiddenimports=DESKTOP_HIDDEN,
     hookspath=[],
     hooksconfig={},

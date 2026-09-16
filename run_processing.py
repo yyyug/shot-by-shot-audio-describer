@@ -105,7 +105,7 @@ def main():
     parser.add_argument("video", help="Path to video file")
     parser.add_argument("-o", "--output", default="output.csv", help="Output CSV path")
     parser.add_argument("--language", default=None, help="Language code for transcription")
-    parser.add_argument("--openrouter-key", default=None, help="OpenRouter API key")
+    parser.add_argument("--api-key", default=None, help="API key for the selected backend")
     parser.add_argument("--skip-whisper", action="store_true", help="Skip transcription (shot-based mode)")
     parser.add_argument("--skip-vlm", action="store_true", help="Skip VLM description")
     parser.add_argument("--skip-stage2", action="store_true", help="Skip Stage 2 summarization")
@@ -178,7 +178,7 @@ def main():
 
     # Step 4: VLM description (Stage 1)
     descriptions_dict = {}
-    if not args.skip_vlm and args.openrouter_key:
+    if not args.skip_vlm and args.api_key:
         print(f"Step 4/6: Generating Stage 1 VLM descriptions ({len(units)} units)...")
         import numpy as np
         
@@ -211,7 +211,7 @@ def main():
                     "prompt_variant": prompt_variant
                 }
                 
-                desc = describe_frames(frames_b64, args.openrouter_key, film_grammar=film_grammar)
+                desc = describe_frames(frames_b64, args.api_key, film_grammar=film_grammar)
                 descriptions_dict[unit["unit_id"]] = desc
                 print(f"  Unit {unit['unit_id']}: OK")
             except Exception as e:
@@ -222,7 +222,7 @@ def main():
 
     # Step 5: Stage 2 summarization
     ad_sentence_map = {}
-    if not args.skip_stage2 and args.openrouter_key and descriptions_dict:
+    if not args.skip_stage2 and args.api_key and descriptions_dict:
         print("Step 5/6: Generating Stage 2 summaries...")
         
         stage1_results = []
@@ -236,7 +236,7 @@ def main():
         
         stage2_results = batch_summarize(
             stage1_results,
-            args.openrouter_key,
+            args.api_key,
             video_type=args.video_type
         )
         ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}

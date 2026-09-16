@@ -15,7 +15,7 @@ from datetime import datetime
 FROZEN = bool(getattr(sys, "frozen", False))
 if FROZEN:
     BASE_DIR = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
-    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(sys.executable)), "ShotByShot")
+    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(sys.executable)), "BuddyAd")
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(BASE_DIR, "outputs")

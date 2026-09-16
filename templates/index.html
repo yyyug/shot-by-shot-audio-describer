@@ -66,13 +66,15 @@
                 <select id="backend" name="backend">
                     <option value="gemini-3.7-flash" selected>Gemini 3.7 Flash</option>
                     <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                    <option value="qwen">Qwen Flash</option>
+                    <option value="deepseek">DeepSeek Flash</option>
                     <option value="openai-compatible">OpenAI Compatible</option>
                 </select>
             </div>
 
             <!-- Gemini API Key -->
             <div class="form-group" id="geminiKeyGroup">
-                <label for="apiKey" data-i18n="geminiKey">Gemini API Key:</label>
+                <label for="apiKey" id="apiKeyLabel" data-i18n="geminiKey">Gemini API Key:</label>
                 <div class="key-row">
                     <input type="password" id="apiKey" name="apiKey">
                     <button type="button" id="testKeyBtnMain" data-i18n="test">Test</button>
@@ -85,7 +87,7 @@
                 <label for="openaiUrl" data-i18n="apiBaseUrl">API Base URL:</label>
                 <input type="text" id="openaiUrl" name="openaiUrl" value="https://api.openai.com/v1">
                 <label for="openaiModel" style="margin-top: 8px;" data-i18n="modelName">Model Name:</label>
-                <input type="text" id="openaiModel" name="openaiModel" value="gpt-4o">
+                <input type="text" id="openaiModel" name="openaiModel" value="qwen/qwen3.8-flash">
                 <label for="openaiApiKey" style="margin-top: 8px;" data-i18n="apiKey">API Key:</label>
                 <div class="key-row">
                     <input type="password" id="openaiApiKey" name="openaiApiKey">
@@ -100,7 +102,7 @@
                 <label for="useWhisper" data-i18n="enableGap">Enable dialogue gap detection</label>
             </div>
             <div class="form-group checkbox">
-                <input type="checkbox" id="useContextExtender" name="useContextExtender" checked>
+                <input type="checkbox" id="useContextExtender" name="useContextExtender">
                 <label for="useContextExtender" data-i18n="useContext">Using multi-shot context to improve AD continuity</label>
             </div>
 
@@ -181,8 +183,16 @@
         // Toggle OpenAI Compatible fields
         document.getElementById('backend').addEventListener('change', function() {
             const isOpenAI = this.value === 'openai-compatible';
+            const isQwen = this.value === 'qwen';
+            const isDeepSeek = this.value === 'deepseek';
             document.getElementById('openaiCompatibleGroup').classList.toggle('hidden', !isOpenAI);
             document.getElementById('geminiKeyGroup').classList.toggle('hidden', isOpenAI);
+            const keyLabel = document.getElementById('apiKeyLabel');
+            if (keyLabel) keyLabel.textContent = isDeepSeek ? 'DeepSeek API Key:' : isQwen ? 'Qwen API Key:' : (I18N.t('geminiKey') || 'API Key:');
+            const modelInput = document.getElementById('openaiModel');
+            if (isOpenAI && modelInput && !modelInput.value.trim()) {
+                modelInput.value = 'qwen/qwen3.8-flash';
+            }
         });
 
         // Toggle custom opening prompt editor
