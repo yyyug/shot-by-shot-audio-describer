@@ -5,16 +5,22 @@ Layout under DATA_DIR (root outputs dir; %LOCALAPPDATA%\\BuddyAd when frozen):
 
     history/<job_id>/
         job.json            # neutral metadata ONLY (no api url / model / key)
-        source.<ext>        # archived copy of the source video (web uploads)
         shots.json          # detected shots
         subtitles.json      # transcription segments
         units.json          # AD units (dialogue-gap intervals or per-shot)
+        frames/unit_<id>/NNNN.jpg  # exact image payload sent per unit
+        frames_manifest.json       # provenance (rules / model / counts)
+        units.jsonl         # one JSON request per unit, for external agents
         thumbs/<shot_id>.jpg  # one representative thumbnail per shot
         runs/<n>/
             meta.json       # run timestamp / status / success counts
             stage1.json     # {unit_id: {start,end,shot_ids,description}}
             stage2.json     # {unit_id: ad_sentence}
             DetailsDescription.csv / AD.csv / final.csv / final.vtt
+
+The source video is deliberately NOT archived - the per-unit frames above are
+what a replay (or an external agent) needs. Prompts are not stored either; they
+are rebuilt deterministically from the unit data.
 
 A reprocess ("重生執行") only re-describes the units that contain the selected
 shots, reuses the descriptions of every other unit from the current run, then
@@ -25,7 +31,10 @@ import os
 import json
 import shutil
 import time
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # persistence helpers
@@ -125,14 +134,6 @@ def set_current_run(job_id, run, data_dir):
         _atomic_write(job_file(job_id, data_dir, "job.json"), rec)
 
 
-def archive_source_video(job_id, video_path, ext, data_dir):
-    """Move the uploaded video into the job folder (returns new path)."""
-    dest = job_file(job_id, data_dir, "source" + ext)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.move(video_path, dest)
-    return dest
-
-
 def resolve_source_video(job_id, data_dir):
     """Return the on-disk video for a job: archived copy (web) or the local
     path recorded on the desktop app (source_path)."""
@@ -168,6 +169,143 @@ def load_shots(job_id, data_dir):
 
 def load_units(job_id, data_dir):
     return _read_json(job_file(job_id, data_dir, "units.json"), {}).get("units", [])
+
+
+# ---------------------------------------------------------------------------
+# unit frames + prompts - the replayable LLM payload
+#
+# The exact images sent to the VLM for each unit are written to disk in order,
+# so a replay (and any external agent) never has to re-run shot detection,
+# transcription or frame extraction. The source video itself is NOT kept.
+# ---------------------------------------------------------------------------
+
+FRAMES_DIR = "frames"
+AGENT_JSONL = "units.jsonl"
+FRAME_MANIFEST = "frames_manifest.json"
+SCHEMA_VERSION = 1
+
+
+def unit_frames_dir(job_id, unit_id, data_dir):
+    return job_file(job_id, data_dir, FRAMES_DIR, f"unit_{unit_id}")
+
+
+def _unit_frame_names(job_id, unit_id, data_dir):
+    d = unit_frames_dir(job_id, unit_id, data_dir)
+    if not os.path.isdir(d):
+        return []
+    return sorted(n for n in os.listdir(d) if n.lower().endswith(".jpg"))
+
+
+def has_unit_frames(job_id, unit_id, data_dir):
+    return bool(_unit_frame_names(job_id, unit_id, data_dir))
+
+
+def save_unit_frames(job_id, unit_id, frames_b64, data_dir):
+    """Persist one unit's exact image payload, in order, as JPEG files."""
+    import base64
+    d = unit_frames_dir(job_id, unit_id, data_dir)
+    os.makedirs(d, exist_ok=True)
+    names = []
+    for i, b64 in enumerate(frames_b64):
+        name = f"{i + 1:04d}.jpg"
+        with open(os.path.join(d, name), "wb") as f:
+            f.write(base64.b64decode(b64))
+        names.append(name)
+    return names
+
+
+def load_unit_frames(job_id, unit_id, data_dir):
+    """Reload a unit's saved images as base64, in the original order."""
+    import base64
+    d = unit_frames_dir(job_id, unit_id, data_dir)
+    out = []
+    for name in _unit_frame_names(job_id, unit_id, data_dir):
+        with open(os.path.join(d, name), "rb") as f:
+            out.append(base64.b64encode(f.read()).decode("ascii"))
+    return out
+
+
+def save_thumbs_from_unit_frames(job_id, unit, frames_b64, data_dir, max_width=320):
+    """Write a per-shot thumbnail from the unit's already-extracted frames.
+
+    History previews must not depend on the source video (which is no longer
+    kept), so the middle frame of the unit is reused for each of its shots.
+    """
+    shot_ids = unit.get("shot_ids") or []
+    if not shot_ids or not frames_b64:
+        return
+    import base64
+    import cv2
+    import numpy as np
+    try:
+        arr = np.frombuffer(base64.b64decode(frames_b64[len(frames_b64) // 2]), dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return
+        h, w = frame.shape[:2]
+        if max_width and w > max_width:
+            scale = max_width / float(w)
+            frame = cv2.resize(frame, (max_width, int(h * scale)))
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ok:
+            return
+        for sid in shot_ids:
+            path = thumb_path(job_id, sid, data_dir)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(buf.tobytes())
+    except Exception as e:
+        logger.warning(f"could not write thumbnails for unit {unit.get('unit_id')}: {e}")
+
+
+def save_frame_manifest(job_id, data_dir, **meta):
+    """Record how the frames were produced so a replay is byte-identical."""
+    rec = {
+        "schema_version": SCHEMA_VERSION,
+        "frames_path": f"{FRAMES_DIR}/unit_<unit_id>/NNNN.jpg",
+        "unit_jsonl": AGENT_JSONL,
+    }
+    rec.update(meta)
+    _atomic_write(job_file(job_id, data_dir, FRAME_MANIFEST), rec)
+    return rec
+
+
+def load_frame_manifest(job_id, data_dir):
+    return _read_json(job_file(job_id, data_dir, FRAME_MANIFEST), {})
+
+
+def job_size_bytes(job_id, data_dir):
+    """Total on-disk size of a job folder (frames dominate)."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(job_dir(job_id, data_dir)):
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                pass
+    return total
+
+
+def write_agent_jsonl(job_id, data_dir, units):
+    """One JSON object per LLM request - the bundle an external agent consumes."""
+    lines = []
+    for u in units:
+        uid = u["unit_id"]
+        images = [f"{FRAMES_DIR}/unit_{uid}/{n}"
+                  for n in _unit_frame_names(job_id, uid, data_dir)]
+        lines.append({
+            "unit_id": uid,
+            "start": u.get("start", 0),
+            "end": u.get("end", 0),
+            "shot_ids": u.get("shot_ids", []),
+            "mode": u.get("mode", ""),
+            "images": images,
+        })
+    path = job_file(job_id, data_dir, AGENT_JSONL)
+    with open(path, "w", encoding="utf-8") as f:
+        for rec in lines:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -351,12 +489,16 @@ def describe_units(units, video_path, job_id, run, data_dir, backend, api_key,
     total = len(units)
     for i, unit in enumerate(units):
         try:
-            frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-            if use_context_extender and shots:
-                context_shots = extractors["context_shots"](shots, unit.get("shot_ids", []))
-                frames_b64 = extractors["context"](video_path, frame_shot, context_shots)
-            else:
-                frames_b64 = extractors["base"](video_path, frame_shot)
+            # Prefer the persisted payload: a replay must never touch the video.
+            frames_b64 = load_unit_frames(job_id, unit["unit_id"], data_dir)
+            if not frames_b64:
+                frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
+                if use_context_extender and shots:
+                    context_shots = extractors["context_shots"](shots, unit.get("shot_ids", []))
+                    frames_b64 = extractors["context"](video_path, frame_shot, context_shots)
+                else:
+                    frames_b64 = extractors["base"](video_path, frame_shot)
+                save_unit_frames(job_id, unit["unit_id"], frames_b64, data_dir)
             film_grammar = build_film_grammar(video_type, custom_opening, unit, shots)
             desc = describe_frames(frames_b64, api_key, backend=backend,
                                    film_grammar=film_grammar,
@@ -401,14 +543,21 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
 
         shots = load_shots(job_id, data_dir)
         units = load_units(job_id, data_dir)
-        video_path = resolve_source_video(job_id, data_dir)
-        if not video_path or not os.path.isfile(video_path):
-            raise RuntimeError("Source video file is missing - cannot reprocess.")
 
         selected = set(selected_unit_ids)
         targets = [u for u in units if u["unit_id"] in selected]
         if not targets:
             raise RuntimeError("Selected shots map to no AD units.")
+
+        # Persisted frames make the source video unnecessary; only fall back to
+        # it for units whose payload was never saved (legacy jobs).
+        video_path = resolve_source_video(job_id, data_dir)
+        needs_video = any(not has_unit_frames(job_id, u["unit_id"], data_dir)
+                          for u in targets)
+        if needs_video and (not video_path or not os.path.isfile(video_path)):
+            raise RuntimeError(
+                "Saved frames are missing for the selected units and the source "
+                "video is no longer available - cannot reprocess.")
 
         prev_run = job.get("current_run", 0)
         new_run = (max(job.get("runs", []) or [0])) + 1

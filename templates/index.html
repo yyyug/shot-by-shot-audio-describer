@@ -67,6 +67,17 @@
         .desc-box.ad { background: #eef7ee; }
         .reprocess-bar { border-top: 1px dashed #ccc; margin-top: 14px; padding-top: 12px; }
         .reprocess-bar .ln-row { margin-top: 6px; }
+        .model-row { display: flex; gap: 8px; align-items: center; }
+        .model-row input { flex: 1; min-width: 0; }
+        .model-row button { width: auto; margin: 0; padding: 10px 14px; white-space: nowrap; font-size: 14px; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-card { background: #fff; border-radius: 10px; padding: 20px; width: 90%; max-width: 430px; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+        .modal-actions button { width: auto; margin: 0; padding: 10px 18px; }
+        .data-dir-bar { display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: #f1f3f5; border: 1px solid #e3e5e8; border-radius: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+        .data-dir-bar code { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 2px 8px; font-size: 12px; word-break: break-all; flex: 1; min-width: 160px; }
+        .data-dir-bar button { width: auto; margin: 0; padding: 8px 14px; white-space: nowrap; font-size: 13px; }
+        .data-dir-hint { color: #888; font-size: 12px; margin: 0 0 12px 0; }
     </style>
 </head>
 <body>
@@ -120,7 +131,10 @@
                 <label for="openaiUrl" data-i18n="apiBaseUrl">API Base URL:</label>
                 <input type="text" id="openaiUrl" name="openaiUrl" value="https://api.openai.com/v1">
                 <label for="openaiModel" style="margin-top: 8px;" data-i18n="modelName">Model Name:</label>
-                <input type="text" id="openaiModel" name="openaiModel" value="qwen/qwen3.8-flash">
+                <div class="model-row">
+                    <input type="text" id="openaiModel" name="openaiModel" value="qwen/qwen3.8-flash">
+                    <button type="button" data-i18n="modelList" onclick="showModelList('openaiModel')">Model list</button>
+                </div>
                 <label for="openaiApiKey" style="margin-top: 8px;" data-i18n="apiKey">API Key:</label>
                 <div class="key-row">
                     <input type="password" id="openaiApiKey" name="openaiApiKey">
@@ -193,6 +207,12 @@
 
         <!-- History -->
         <div id="historyPanel" class="hidden">
+            <div class="data-dir-bar">
+                <span data-i18n="dataDirLabel">Data folder:</span>
+                <code id="webDataDir">-</code>
+                <button type="button" id="copyDataDirBtn" data-i18n="copyBtn">Copy</button>
+            </div>
+            <p class="data-dir-hint" data-i18n="webOpenHint">Browsers can't open local folders - copy the path and paste it into File Explorer.</p>
             <div id="historyList"></div>
             <div id="historyDetail" class="hidden">
                 <button type="button" id="backBtn" class="back-btn" style="margin-top:0;"><span data-i18n="backBtn">← Back</span></button>
@@ -205,6 +225,18 @@
                     <h3 data-i18n="processing">Processing...</h3>
                     <div class="progress-bar"><div id="rpProgressFill" class="progress-fill"></div></div>
                     <p id="rpProgressText"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model list picker -->
+        <div id="modelListModal" class="modal-overlay hidden">
+            <div class="modal-card">
+                <h3 data-i18n="modelListTitle" style="text-align:center; margin-bottom:12px;">Available Models</h3>
+                <select id="modelListSelect" size="9" style="font-size:14px;"></select>
+                <div class="modal-actions">
+                    <button type="button" id="modelListCancel" data-i18n="cancel" style="background:#6c757d;">Cancel</button>
+                    <button type="button" id="modelListApply" data-i18n="apply">Apply</button>
                 </div>
             </div>
         </div>
@@ -459,7 +491,7 @@
             $('tabHistoryBtn').classList.toggle('active', showHistory);
             $('taskPanel').classList.toggle('hidden', showHistory);
             $('historyPanel').classList.toggle('hidden', !showHistory);
-            if (showHistory) refreshHistory();
+            if (showHistory) { loadDataDir(); refreshHistory(); }
         }
         $('tabTaskBtn').addEventListener('click', () => switchTab(false));
         $('tabHistoryBtn').addEventListener('click', () => switchTab(true));
@@ -468,6 +500,38 @@
             $('historyList').classList.remove('hidden');
             refreshHistory();
         });
+
+        async function loadDataDir() {
+            try {
+                const r = await fetch('/api/data_dir');
+                const d = await r.json();
+                const el = $('webDataDir');
+                if (el && d.path) el.textContent = d.path;
+            } catch (e) {}
+        }
+
+        $('copyDataDirBtn').addEventListener('click', async () => {
+            const p = $('webDataDir').textContent;
+            if (!p || p === '-') return;
+            try {
+                await navigator.clipboard.writeText(p);
+            } catch (e) {
+                const ta = document.createElement('textarea');
+                ta.value = p;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                ta.remove();
+            }
+        });
+
+        function fmtBytes(n) {
+            if (!n) return '0 B';
+            const u = ['B', 'KB', 'MB', 'GB'];
+            let i = 0, v = n;
+            while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+            return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
+        }
 
         async function refreshHistory() {
             selectedShots.clear();
@@ -492,7 +556,7 @@
                     : `<span class="badge gray">${I18N.t('running')}</span>`;
                 return `<div class="job-card"><div class="row">
                     <div><strong>${esc(j.filename)}</strong><br>
-                        <small style="color:#888;">${esc(j.created_at)} · ${j.shots_count} ${I18N.t('jobStats')} · ${j.units_count} ${I18N.t('unitLabel')} · ${j.runs_count} ${I18N.t('runsTitle')}</small></div>
+                        <small style="color:#888;">${esc(j.created_at)} · ${j.shots_count} ${I18N.t('jobStats')} · ${j.units_count} ${I18N.t('unitLabel')} · ${j.frames_count || 0} ${I18N.t('framesLabel')} · ${fmtBytes(j.size_bytes)}</small></div>
                     <div class="job-btns">${badge}
                         <button type="button" class="back-btn" onclick="openJob('${j.job_id}')">${I18N.t('openBtn')}</button>
                         <button type="button" class="back-btn" onclick="deleteJob('${j.job_id}')">${I18N.t('deleteBtn')}</button>
@@ -559,7 +623,7 @@
 
         function renderReprocessBar(d) {
             const box = $('reprocessForm');
-            if (!d.source_available) {
+            if (!d.source_available && !d.frames_available) {
                 box.innerHTML = `<p style="color:#b02a37;">${I18N.t('sourceMissing')}</p>`;
                 return;
             }
@@ -588,7 +652,10 @@
                     <label for="rpUrl">${I18N.t('apiBaseUrl')}:</label>
                     <input type="text" id="rpUrl" value="https://api.openai.com/v1">
                     <label for="rpModel" style="margin-top:6px;">${I18N.t('modelName')}:</label>
-                    <input type="text" id="rpModel" value="qwen/qwen3.8-flash">
+                    <div class="model-row">
+                        <input type="text" id="rpModel" value="qwen/qwen3.8-flash">
+                        <button type="button" onclick="showModelList('rpModel')">${I18N.t('modelList')}</button>
+                    </div>
                     <label for="rpOpenAiKey" style="margin-top:6px;">${I18N.t('apiKey')}:</label>
                     <input type="password" id="rpOpenAiKey" style="width:100%;">
                 </div>
@@ -704,6 +771,60 @@
             };
             es.onerror = () => { es.close(); box.classList.add('hidden'); alert(I18N.t('connectionLost')); };
         }
+
+        // ================= Model list picker =================
+        const MODEL_GROUPS = [
+            { group: 'Qwen (通義千問)', models: ['qwen/qwen3.8-flash', 'qwen/qwen-max', 'qwen/qwen3-vl-plus', 'qwen/qwen2.5-vl-72b-instruct'] },
+            { group: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'] },
+            { group: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano'] },
+            { group: 'Kimi (Moonshot)', models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
+            { group: '豆包 (Doubao)', models: ['doubao-seed-1.6-flash-250915', 'doubao-seed-1.6-thinking-250915'] },
+            { group: '混元 (Hunyuan)', models: ['hunyuan-turbos-latest', 'hunyuan-turbos-vision-latest'] }
+        ];
+        let modelListInputId = null;
+
+        function showModelList(inputId) {
+            modelListInputId = inputId;
+            const sel = document.getElementById('modelListSelect');
+            const cur = (document.getElementById(inputId).value || '').trim();
+            sel.innerHTML = '';
+            let matched = false;
+            MODEL_GROUPS.forEach(g => {
+                const og = document.createElement('optgroup');
+                og.label = g.group;
+                g.models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    opt.textContent = m;
+                    if (m === cur) { opt.selected = true; matched = true; }
+                    og.appendChild(opt);
+                });
+                sel.appendChild(og);
+            });
+            if (!matched) sel.selectedIndex = -1;
+            document.getElementById('modelListModal').classList.remove('hidden');
+        }
+
+        function applyModelList() {
+            const sel = document.getElementById('modelListSelect');
+            if (modelListInputId && sel.selectedOptions.length) {
+                document.getElementById(modelListInputId).value = sel.selectedOptions[0].value;
+            }
+            document.getElementById('modelListModal').classList.add('hidden');
+            modelListInputId = null;
+        }
+
+        function closeModelList() {
+            document.getElementById('modelListModal').classList.add('hidden');
+            modelListInputId = null;
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const overlay = document.getElementById('modelListModal');
+            document.getElementById('modelListApply').addEventListener('click', applyModelList);
+            document.getElementById('modelListCancel').addEventListener('click', closeModelList);
+            overlay.addEventListener('click', e => { if (e.target === overlay) closeModelList(); });
+        });
     </script>
 </body>
 </html>

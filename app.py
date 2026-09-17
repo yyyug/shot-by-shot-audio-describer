@@ -238,21 +238,20 @@ def process_video_task(task_id, video_path, options):
     try:
         backend = options.get("backend", "gemini")
         api_key = options.get("api_key") or options.get("gemini_key")        
-        # Archive the upload into the job history folder: reprocess ("重生執行")
-        # needs the source video later, so it is kept on success instead of
-        # being deleted (remaining video processing below uses the archive).
         filename = os.path.basename(video_path)
         if filename.startswith(task_id + "_"):
             filename = filename[len(task_id) + 1:]
-        ext = os.path.splitext(filename)[1] or ".mp4"
         history.create_job(
             task_id, filename, DATA_DIR,
             video_type=options.get("video_type", "movie"),
             gap_detection_enabled=bool(options.get("use_whisper", True)),
             use_context_extender=bool(options.get("use_context_extender", False)),
         )
-        video_path = history.archive_source_video(task_id, video_path, ext, DATA_DIR)
-        logger.info(f"Task {task_id}: archived source -> {video_path}")
+        # The source video is deliberately NOT kept: the exact LLM payload
+        # (per-unit frames + rendered prompts) is persisted under
+        # history/<job_id>/ instead, so replays and external agents never need
+        # the video again.
+        logger.info(f"Task {task_id}: source video not archived (frames will be saved)")
         # Get video duration for progress display
         import cv2
         cap = cv2.VideoCapture(video_path)
@@ -343,6 +342,38 @@ def process_video_task(task_id, video_path, options):
                           gap_detection_active=gap_detection_active)
         history.set_current_run(task_id, 0, DATA_DIR)
 
+        # Persist the exact image payload for every unit up-front. Doing it once
+        # here (instead of inside the description loop) means a replay loads
+        # these files rather than re-running shot detection, transcription or
+        # frame extraction - and the payload survives even if the API fails.
+        shot_scales = [2] * len(shots)
+        threads = [[j for j in range(len(shots))]]
+        frame_counts = {}
+        status["step"] = "frames"
+        for i, unit in enumerate(units):
+            frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
+            if options.get("use_context_extender") and shots:
+                context_shots = _get_context_shots(shots, unit["shot_ids"])
+                frames_b64 = _extract_frames_with_context(video_path, frame_shot, context_shots)
+            else:
+                frames_b64 = extract_frames_base64(video_path, frame_shot)
+            history.save_unit_frames(task_id, unit["unit_id"], frames_b64, DATA_DIR)
+            history.save_thumbs_from_unit_frames(task_id, unit, frames_b64, DATA_DIR)
+            frame_counts[str(unit["unit_id"])] = len(frames_b64)
+            status["detail"] = f"Saving frames {i+1}/{len(units)}"
+            status["progress"] = 40 + int(((i + 1) / len(units)) * 5)
+        history.save_frame_manifest(
+            task_id, DATA_DIR,
+            backend=backend,
+            model=options.get("openai_model") or "",
+            use_context_extender=bool(options.get("use_context_extender")),
+            speech_transcription=bool(subtitles),
+            frames_per_unit=frame_counts,
+        )
+        history.write_agent_jsonl(task_id, DATA_DIR, units)
+        logger.info(f"Task {task_id}: saved frames for {len(units)} units "
+                    f"({sum(frame_counts.values())} images)")
+
         # Character detection (optional) - parity with desktop: stub only
         if options.get("use_character_bank"):
             status["step"] = "character_bank"
@@ -359,22 +390,16 @@ def process_video_task(task_id, video_path, options):
             status["step"] = "stage1_vlm"
             status["detail"] = "Starting VLM descriptions..."
             logger.info(f"Task {task_id}: VLM descriptions begin - {len(units)} units, backend={backend}, context={bool(options.get('use_context_extender'))}")
-            shot_scales = [2] * len(shots)
-            threads = [[j for j in range(len(shots))]]
             stage1_error_categories = {}
             for i, unit in enumerate(units):
                 try:
                     logger.info(f"Task {task_id}: unit {i+1}/{len(units)} ({unit.get('mode', 'shot')})")
-                    frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-                    if options.get("use_context_extender") and shots:
-                        context_shots = _get_context_shots(shots, unit["shot_ids"])
-                        frames_b64 = _extract_frames_with_context(video_path, frame_shot, context_shots)
-                    else:
-                        frames_b64 = extract_frames_base64(video_path, frame_shot)
-                    current_shots = [s - 1 for s in unit["shot_ids"]]
+                    # Replay the exact frames persisted above; the prompt is
+                    # rebuilt deterministically from the unit + run options.
+                    frames_b64 = history.load_unit_frames(task_id, unit["unit_id"], DATA_DIR)
                     film_grammar = {"video_type": options.get("video_type", "movie"), "label_type": "none",
-                                    "char_text": "", "current_shots": current_shots, "threads": threads,
-                                    "shot_scales": shot_scales, "prompt_variant": 4,
+                                    "char_text": "", "current_shots": [s - 1 for s in unit["shot_ids"]],
+                                    "threads": threads, "shot_scales": shot_scales, "prompt_variant": 4,
                                     "custom_opening": options.get("custom_opening")}
                     logger.info(f"Task {task_id}: calling API for unit {i+1} ({len(frames_b64)} frames)")
                     desc = describe_frames(frames_b64, api_key, backend=backend, film_grammar=film_grammar,
@@ -517,12 +542,25 @@ def process_video_task(task_id, video_path, options):
         status["error"] = str(e)
         logger.critical(f"Task {task_id}: FAILED at step={status.get('step')} progress={status.get('progress')}: {e}", exc_info=True)
     finally:
+        # The upload is only needed while this run executes: the replayable
+        # payload now lives under history/<job_id>/frames, so drop the video.
+        try:
+            upload_root = os.path.abspath(app.config['UPLOAD_FOLDER'])
+            if os.path.isfile(video_path) and os.path.abspath(video_path).startswith(upload_root + os.sep):
+                os.remove(video_path)
+                logger.info(f"Task {task_id}: removed uploaded source video")
+        except OSError as e:
+            logger.warning(f"Task {task_id}: could not remove uploaded video: {e}")
         _release_task(task_id)
 
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/api/data_dir')
+def api_data_dir():
+    return jsonify({"path": DATA_DIR})
 
 @app.route('/test_api', methods=['POST'])
 def test_api_route():
@@ -622,6 +660,7 @@ def _job_summary(job):
     shots = history.load_shots(job_id, DATA_DIR)
     units = history.load_units(job_id, DATA_DIR)
     run_meta = history.load_run_meta(job_id, job.get("current_run", 0), DATA_DIR)
+    manifest = history.load_frame_manifest(job_id, DATA_DIR)
     return {
         "job_id": job_id,
         "filename": job.get("filename", ""),
@@ -631,6 +670,8 @@ def _job_summary(job):
         "current_run": job.get("current_run", 0),
         "run_status": run_meta.get("status", "running"),
         "runs_count": len(job.get("runs", [])),
+        "frames_count": sum(int(v) for v in manifest.get("frames_per_unit", {}).values()),
+        "size_bytes": history.job_size_bytes(job_id, DATA_DIR),
         "source_available": bool(history.resolve_source_video(job_id, DATA_DIR)),
     }
 
@@ -681,6 +722,8 @@ def _history_detail(job_id):
         "units": units_out,
         "runs": runs,
         "source_available": bool(video),
+        "frames_available": any(history.has_unit_frames(job_id, u["unit_id"], DATA_DIR)
+                                for u in units),
         "thumb_base": f"/history/{job_id}/thumb/",
         "download_base": f"/history/{job_id}/file",
     }

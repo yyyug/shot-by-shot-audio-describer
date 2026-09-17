@@ -376,7 +376,37 @@ class AppBridge:
             history.set_current_run(task_id, 0, DATA_DIR)
             self.emit_progress(task_id, status)
             logger.info(f"Built {len(units)} AD units")
-            
+
+            # Persist the exact image payload + rendered prompt per unit so a
+            # replay never has to re-detect shots, re-transcribe or re-grab
+            # frames (the source video stays where the user put it and is not
+            # copied into the job folder).
+            status["step"] = "frames"
+            frame_counts = {}
+            for i, unit in enumerate(units):
+                frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
+                if options.get("use_context_extender") and shots:
+                    context_shots = self._get_context_shots(shots, unit["shot_ids"])
+                    frames_b64 = self._extract_frames_with_context(video_path, frame_shot, context_shots)
+                else:
+                    frames_b64 = self._extract_frames(video_path, frame_shot)
+                history.save_unit_frames(task_id, unit["unit_id"], frames_b64, DATA_DIR)
+                history.save_thumbs_from_unit_frames(task_id, unit, frames_b64, DATA_DIR)
+                frame_counts[str(unit["unit_id"])] = len(frames_b64)
+                status["detail"] = f"Saving frames {i+1}/{len(units)}"
+                status["progress"] = 40 + int(((i + 1) / len(units)) * 5)
+                self.emit_progress(task_id, status)
+            history.save_frame_manifest(
+                task_id, DATA_DIR,
+                backend=options.get("backend", "gemini"),
+                model=options.get("openai_model") or "",
+                use_context_extender=bool(options.get("use_context_extender")),
+                speech_transcription=bool(subtitles),
+                frames_per_unit=frame_counts,
+            )
+            history.write_agent_jsonl(task_id, DATA_DIR, units)
+            logger.info(f"Saved frames for {len(units)} units ({sum(frame_counts.values())} images)")
+
             # Step 4: Character detection (optional)
             if options.get("use_character_bank"):
                 status["step"] = "character_bank"
@@ -403,22 +433,16 @@ class AppBridge:
                     try:
                         logger.info(f"Processing unit {i+1}/{len(units)}...")
                         
-                        frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-                        if use_context and shots:
-                            # Get context shots (2 before + current + 2 after)
-                            context_shots = self._get_context_shots(shots, unit["shot_ids"])
-                            status["detail"] = f"Describing unit {i+1}/{len(units)} with {len(context_shots)} context shots"
-                            frames_b64 = self._extract_frames_with_context(video_path, frame_shot, context_shots)
-                        else:
-                            frames_b64 = self._extract_frames(video_path, frame_shot)
-                        
+                        # Replay the exact frames persisted above; the prompt is
+                        # rebuilt deterministically from the unit + run options.
+                        frames_b64 = history.load_unit_frames(task_id, unit["unit_id"], DATA_DIR)
+
                         duration = unit["end"] - unit["start"]
                         num_frames = len(frames_b64)
                         status["detail"] = f"Describing unit {i+1}/{len(units)} ({duration:.0f}s, {num_frames} frames)"
-                        
-                        logger.info(f"Calling Gemini API for unit {i+1} ({num_frames} frames)...")
-                        
-                        # Build film grammar for prompt selection
+
+                        logger.info(f"Calling API for unit {i+1} ({num_frames} frames)...")
+
                         film_grammar = {
                             "video_type": options.get("video_type", "movie"),
                             "label_type": "none",
@@ -429,10 +453,10 @@ class AppBridge:
                             "prompt_variant": 4,
                             "custom_opening": (options.get("custom_opening") or "").strip() or None
                         }
-                        
+
                         desc = describe_frames(
-                            frames_b64, api_key, 
-                            backend=backend, 
+                            frames_b64, api_key,
+                            backend=backend,
                             film_grammar=film_grammar,
                             openai_url=options.get("openai_url"),
                             openai_model=options.get("openai_model")
@@ -700,6 +724,7 @@ class AppBridge:
         for job in history.list_jobs(DATA_DIR):
             job_id = job["job_id"]
             meta = history.load_run_meta(job_id, job.get("current_run", 0), DATA_DIR)
+            manifest = history.load_frame_manifest(job_id, DATA_DIR)
             jobs.append({
                 "job_id": job_id,
                 "filename": job.get("filename", ""),
@@ -709,6 +734,8 @@ class AppBridge:
                 "current_run": job.get("current_run", 0),
                 "run_status": meta.get("status", "running"),
                 "runs_count": len(job.get("runs", [])),
+                "frames_count": sum(int(v) for v in manifest.get("frames_per_unit", {}).values()),
+                "size_bytes": history.job_size_bytes(job_id, DATA_DIR),
                 "source_available": bool(history.resolve_source_video(job_id, DATA_DIR)),
             })
         return {"jobs": jobs}
@@ -757,6 +784,8 @@ class AppBridge:
             "units": units_out,
             "runs": runs,
             "source_available": bool(video),
+            "frames_available": any(history.has_unit_frames(job_id, u["unit_id"], DATA_DIR)
+                                    for u in units),
             "desktop": True,
         }
 
@@ -807,6 +836,15 @@ class AppBridge:
         if not os.path.isdir(d):
             return False
         os.startfile(d)
+        return True
+
+    def get_data_dir(self):
+        return {"path": DATA_DIR}
+
+    def reveal_appdata(self):
+        """Open the app data folder (root outputs dir) in Explorer."""
+        os.makedirs(DATA_DIR, exist_ok=True)
+        os.startfile(DATA_DIR)
         return True
 
 
