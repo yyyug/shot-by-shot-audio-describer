@@ -15,7 +15,7 @@ _MODEL_DIRS_JSON = "model_dirs.json"
 
 
 def _find_local_models_dir():
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
         exe_dir = os.path.dirname(sys.executable)
         meipass = getattr(sys, "_MEIPASS", "")
         candidates = [

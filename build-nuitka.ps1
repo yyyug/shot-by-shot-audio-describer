@@ -70,12 +70,19 @@ if ($LASTEXITCODE -ne 0) { Write-Warn "pip install failed."; exit 1 }
 $DataArgs = @(
     "--include-data-dir=$Root\templates=templates",
     "--include-data-dir=$Root\static=static",
-    "--include-data-dir=$Root\models\sensevoice=models\sensevoice"
+    "--include-data-dir=$Root\models\sensevoice=models\sensevoice",
+    # Few-shot GT AD sentences read by processing/llm_summarizer at import time
+    # (resolved as <processing>/../stage2/gt_ad_train). Only the two the app
+    # actually reads are shipped - madeval_train.csv is used solely by the
+    # unwired stage2/main_*.py research scripts, so it stays out of the bundle.
+    "--include-data-files=$Root\stage2\gt_ad_train\cmdad_train.csv=stage2\gt_ad_train\cmdad_train.csv",
+    "--include-data-files=$Root\stage2\gt_ad_train\tvad_train.csv=stage2\gt_ad_train\tvad_train.csv"
 )
-$CommonArgs = @(
-    "--standalone",
-    "--output-dir=$Root\dist-nuitka",
-    "--windows-icon-from-ico=$Root\packaging\shot.ico",
+# The packaged app is ONNX-only (funasr_onnx + onnxruntime): the torch-backed
+# transcription fallback and the DINOv2 film-grammar helpers are never called,
+# so the whole torch stack stays out of the build. This is also what keeps the
+# compile time in minutes instead of hours.
+$NoFollowArgs = @(
     "--nofollow-import-to=matplotlib",
     "--nofollow-import-to=IPython",
     "--nofollow-import-to=jupyter",
@@ -85,17 +92,49 @@ $CommonArgs = @(
     "--nofollow-import-to=PyQt6",
     "--nofollow-import-to=PySide2",
     "--nofollow-import-to=PySide6",
+    "--nofollow-import-to=torch",
+    "--nofollow-import-to=torchvision",
+    "--nofollow-import-to=torchaudio",
+    "--nofollow-import-to=funasr",
+    "--nofollow-import-to=modelscope",
+    "--nofollow-import-to=transformers",
+    "--nofollow-import-to=tensorboard"
+)
+# funasr_onnx is imported lazily inside functions; jieba ships a dict.txt that
+# it loads at runtime, so its data files must be included explicitly.
+$IncludeArgs = @(
     "--include-package=processing",
-    "--include-package=funasr",
-    "--include-package=modelscope"
-) + $DataArgs
+    "--include-package=funasr_onnx",
+    "--include-package-data=jieba"
+)
+$CommonArgs = @(
+    "--standalone",
+    "--output-dir=$Root\dist-nuitka",
+    "--windows-icon-from-ico=$Root\packaging\shot.ico",
+    "--assume-yes-for-downloads",
+    # Huge generated C modules (mpmath/libmp, google.genai.types, ...) killed the
+    # default parallel cl.exe jobs with OOM ("Compiler terminating ... Abort
+    # complete", exit 3221225786) when 8 of them ran at once. Keep the lean
+    # compiler settings from --low-memory, but run 2 compile jobs instead of its
+    # default of 1 - an explicit --jobs overrides that default (Nuitka's
+    # Options.getJobLimit), so both options combine.
+    "--low-memory",
+    "--jobs=2"
+) + $NoFollowArgs + $IncludeArgs + $DataArgs
 
-Write-Step "Compiling desktop version with Nuitka (first run compiles torch/funasr - be patient)..."
+Write-Step "Compiling desktop app with Nuitka (native, no readable Python)..."
 Push-Location $Root
-& $VenvPython -m nuitka @CommonArgs --output-filename=ShotByShotDesktop.exe desktop.py
+& $VenvPython -m nuitka @CommonArgs --windows-console-mode=disable `
+    --output-filename=ShotByShotDesktop.exe desktop.py
 if ($LASTEXITCODE -ne 0) { Pop-Location; Write-Warn "Nuitka build (desktop) failed."; exit 1 }
 Write-Ok "Built: $(Join-Path $Root 'dist-nuitka\desktop.dist\ShotByShotDesktop.exe')"
+
+Write-Step "Compiling web app with Nuitka..."
+& $VenvPython -m nuitka @CommonArgs --windows-console-mode=force `
+    --output-filename=ShotByShotWeb.exe webapp_entry.py
+if ($LASTEXITCODE -ne 0) { Pop-Location; Write-Warn "Nuitka build (web) failed."; exit 1 }
+Write-Ok "Built: $(Join-Path $Root 'dist-nuitka\webapp_entry.dist\ShotByShotWeb.exe')"
 Pop-Location
 
-Write-Step "Done. The .dist folder is self-contained and needs no Python."
-Write-Warn "Zip it for distribution, or point ShotByShot.iss at the Nuitka output."
+Write-Step "Done. Both .dist folders are self-contained and need no Python."
+Write-Warn "Zip them for distribution, or point ShotByShot.iss at the Nuitka output."

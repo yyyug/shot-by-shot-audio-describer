@@ -187,11 +187,13 @@ EXCLUDES = [
 
 # Few-shot ground-truth AD examples used by processing/llm_summarizer at
 # runtime (resolved relative to the processing module as ../stage2/gt_ad_train).
+# Only cmdad (movies) and tvad (TV series / stage) are read by the app;
+# madeval_train.csv is used solely by the unwired stage2/main_*.py research
+# scripts, so it is intentionally not bundled.
 GT_TRAIN_SRC = os.path.join(PROJECT_ROOT, "stage2", "gt_ad_train")
 GT_TRAIN_DATA = [
     (os.path.join(GT_TRAIN_SRC, "cmdad_train.csv"), os.path.join("stage2", "gt_ad_train")),
     (os.path.join(GT_TRAIN_SRC, "tvad_train.csv"), os.path.join("stage2", "gt_ad_train")),
-    (os.path.join(GT_TRAIN_SRC, "madeval_train.csv"), os.path.join("stage2", "gt_ad_train")),
 ]
 
 DATA = [

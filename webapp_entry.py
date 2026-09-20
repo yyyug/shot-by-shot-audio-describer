@@ -12,7 +12,7 @@ import threading
 import webbrowser
 from datetime import datetime
 
-FROZEN = bool(getattr(sys, "frozen", False))
+FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 if FROZEN:
     BASE_DIR = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
     DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.dirname(sys.executable)), "BuddyAd")

@@ -131,7 +131,6 @@ if ((Test-Path $gtSrc) -and -not (Test-Path $gtDst)) {
     New-Item -ItemType Directory -Path $gtDst -Force | Out-Null
     Copy-Item (Join-Path $gtSrc "cmdad_train.csv") $gtDst -Force
     Copy-Item (Join-Path $gtSrc "tvad_train.csv") $gtDst -Force
-    Copy-Item (Join-Path $gtSrc "madeval_train.csv") $gtDst -Force
     Write-Ok "Copied GT training CSVs ($gtDst)"
 } else {
     Write-Ok "GT training data present or source missing; skipped."

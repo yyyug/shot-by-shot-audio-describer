@@ -14,7 +14,7 @@ import numpy as np
 from datetime import datetime
 
 # Configure logging
-FROZEN = bool(getattr(sys, "frozen", False))
+FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 _MEIPASS = getattr(sys, "_MEIPASS", None)
 if FROZEN:
     BASE_DIR = _MEIPASS or os.path.dirname(sys.executable)

@@ -35,7 +35,7 @@ def _api_common():
 # Resolve resource folders for both source and PyInstaller-frozen layouts.
 # Mirrors desktop.py exactly so both versions write outputs to the same place.
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-FROZEN = bool(getattr(sys, "frozen", False))
+FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 if FROZEN:
     # Packaged app: keep user data in a writable location (Program Files is read-only)
     DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "BuddyAd")
