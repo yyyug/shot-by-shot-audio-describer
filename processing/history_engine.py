@@ -7,11 +7,12 @@ Layout under DATA_DIR (root outputs dir; %LOCALAPPDATA%\\BuddyAd when frozen):
         job.json            # neutral metadata ONLY (no api url / model / key)
         shots.json          # detected shots
         subtitles.json      # transcription segments
-        units.json          # AD units (dialogue-gap intervals or per-shot)
+        units.json          # AD units (dialogue-gap intervals, shots, or user ranges)
         frames/unit_<id>/NNNN.jpg  # exact image payload sent per unit
         frames_manifest.json       # provenance (rules / model / counts)
         units.jsonl         # one JSON request per unit, for external agents
         thumbs/<shot_id>.jpg  # one representative thumbnail per shot
+        thumbs/<unit_id>.jpg  # ... and one per user-picked range ("C1", ...)
         runs/<n>/
             meta.json       # run timestamp / status / success counts
             stage1.json     # {unit_id: {start,end,shot_ids,description}}
@@ -226,19 +227,24 @@ def load_unit_frames(job_id, unit_id, data_dir):
 
 
 def save_thumbs_from_unit_frames(job_id, unit, frames_b64, data_dir, max_width=320):
-    """Write a per-shot thumbnail from the unit's already-extracted frames.
+    """Write the unit's thumbnail from its already-extracted frames.
 
     History previews must not depend on the source video (which is no longer
-    kept), so the middle frame of the unit is reused for each of its shots.
+    kept), so one of the unit's frames is reused: the first frame for a
+    user-picked range (that is the frame that identifies it), the middle frame
+    for a shot. A range is keyed by its own unit id instead of by the shots it
+    covers, so it never overwrites their previews.
     """
-    shot_ids = unit.get("shot_ids") or []
-    if not shot_ids or not frames_b64:
+    custom = unit.get("mode") == "custom"
+    key_ids = [unit.get("unit_id")] if custom else (unit.get("shot_ids") or [])
+    if not key_ids or not frames_b64:
         return
     import base64
     import cv2
     import numpy as np
     try:
-        arr = np.frombuffer(base64.b64decode(frames_b64[len(frames_b64) // 2]), dtype=np.uint8)
+        index = 0 if custom else len(frames_b64) // 2
+        arr = np.frombuffer(base64.b64decode(frames_b64[index]), dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if frame is None:
             return
@@ -249,7 +255,7 @@ def save_thumbs_from_unit_frames(job_id, unit, frames_b64, data_dir, max_width=3
         ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if not ok:
             return
-        for sid in shot_ids:
+        for sid in key_ids:
             path = thumb_path(job_id, sid, data_dir)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as f:
@@ -465,11 +471,12 @@ def _api_common():
 # ---------------------------------------------------------------------------
 
 def build_film_grammar(video_type, custom_opening, unit, shots):
+    from processing.time_ranges import current_shot_indices
     return {
         "video_type": video_type,
         "label_type": "none",
         "char_text": "",
-        "current_shots": [s - 1 for s in unit.get("shot_ids", [])],
+        "current_shots": current_shot_indices(unit, shots),
         "threads": [[j for j in range(len(shots))]],
         "shot_scales": [2] * len(shots),
         "prompt_variant": 4,
@@ -603,7 +610,7 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
                 "start": u.get("start", 0),
                 "end": u.get("end", 0),
                 "description": rec.get("description", ""),
-                "unit_mode": u.get("mode", ""),
+                "mode": u.get("mode", ""),
             })
         success_count = sum(1 for r in stage1_results if str(r["description"]).strip())
         stage1_ready = len(units) > 0 and success_count / len(units) >= 0.5
@@ -625,7 +632,7 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
             from processing.llm_summarizer import batch_summarize
             stage1_for_stage2 = [{
                 "shot_id": r["shot_id"], "start": r["start"], "end": r["end"],
-                "description": r["description"],
+                "description": r["description"], "mode": r.get("mode"),
             } for r in stage1_results]
             stage2_results = batch_summarize(
                 stage1_for_stage2, api_key, backend=backend,

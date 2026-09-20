@@ -11,9 +11,12 @@
         h1 { text-align: center; color: #333; margin-bottom: 30px; font-size: 24px; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: 500; color: #555; }
-        select, input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
+        select, input[type="password"], input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
         .checkbox { display: flex; align-items: center; gap: 8px; }
         .checkbox input { width: auto; }
+        .radio-row { display: flex; align-items: center; gap: 8px; }
+        .radio-row input { width: auto; }
+        .radio-row label { margin-bottom: 0; font-weight: normal; }
         button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
         button:hover { background: #0056b3; }
         button:disabled { background: #ccc; cursor: not-allowed; }
@@ -153,6 +156,31 @@
                 <label for="useContextExtender" data-i18n="useContext">Using multi-shot context to improve AD continuity</label>
             </div>
             
+            <!-- How much of the video to describe -->
+            <div class="form-group">
+                <label data-i18n="rangeScope">Describe:</label>
+                <div class="radio-row">
+                    <input type="radio" id="rangeFull" name="rangeMode" value="full" checked>
+                    <label for="rangeFull" data-i18n="rangeFull">Whole video</label>
+                </div>
+                <div class="radio-row">
+                    <input type="radio" id="rangeExtra" name="rangeMode" value="extra">
+                    <label for="rangeExtra" data-i18n="rangeExtra">Whole video, plus the segments below</label>
+                </div>
+                <div class="radio-row">
+                    <input type="radio" id="rangeOnly" name="rangeMode" value="only">
+                    <label for="rangeOnly" data-i18n="rangeOnly">Only the segments below</label>
+                </div>
+                <div id="rangeGroup" style="display: none; margin-top: 8px;">
+                    <input type="text" id="timeRanges" name="timeRanges"
+                        placeholder="00:00:10-00:00:20,00:01:05-00:01:30">
+                    <p style="color:#888; font-size:12px; margin-top:4px;" data-i18n="rangeNote">
+                        hh:mm:ss-hh:mm:ss, separated by commas.
+                    </p>
+                    <p id="rangeError" style="color:#c00; font-size:12px; margin-top:4px; display:none;"></p>
+                </div>
+            </div>
+            
             <!-- Video type -->
             <div class="form-group">
                 <label for="videoType" data-i18n="videoType">Video Type:</label>
@@ -285,6 +313,94 @@
                 (this.value === 'custom') ? '' : 'none';
         });
 
+        // --- "Describe" scope: whole video vs. user-picked ranges -----------
+        // Mirrors processing/time_ranges.py - same accepted input, same
+        // canonical hh:mm:ss-hh:mm:ss output - so the two cannot disagree.
+        function rangeMode() {
+            const el = document.querySelector('input[name="rangeMode"]:checked');
+            return el ? el.value : 'full';
+        }
+        function rangeBox() { return document.getElementById('timeRanges'); }
+
+        function parseTimeToken(tok) {
+            const parts = tok.trim().replace(/：/g, ':').split(':');
+            if (parts.length > 3 || parts.some(p => p === '' || isNaN(Number(p)))) return null;
+            const nums = parts.map(Number);
+            if (nums.some(n => n < 0)) return null;
+            let h = 0, m = 0, s = 0;
+            if (nums.length === 3) { h = nums[0]; m = nums[1]; s = nums[2]; }
+            else if (nums.length === 2) { m = nums[0]; s = nums[1]; }
+            else { s = nums[0]; }
+            return Math.round(h * 3600 + m * 60 + s);
+        }
+
+        function fmtRangeTime(sec) {
+            const t = Math.max(0, Math.round(sec));
+            const p = n => String(n).padStart(2, '0');
+            return `${p(Math.floor(t / 3600))}:${p(Math.floor((t % 3600) / 60))}:${p(t % 60)}`;
+        }
+
+        // Returns {ranges} (sorted, as the backend sorts) or {error}.
+        function parseRanges(text) {
+            const raw = String(text || '')
+                .replace(/[，;；、\n\r]/g, ',').replace(/[–—－~～至]/g, '-');
+            const chunks = raw.split(',').map(c => c.trim()).filter(c => c);
+            if (!chunks.length) return { error: I18N.t('rangeEmpty') };
+            const ranges = [];
+            for (const chunk of chunks) {
+                const bounds = chunk.split('-').map(b => b.trim());
+                if (bounds.length !== 2 || !bounds[0] || !bounds[1]) {
+                    return { error: I18N.t('rangeBadFormat').replace('{v}', chunk) };
+                }
+                const start = parseTimeToken(bounds[0]);
+                const end = parseTimeToken(bounds[1]);
+                if (start === null || end === null) {
+                    return { error: I18N.t('rangeBadTime').replace('{v}', chunk) };
+                }
+                if (start >= end) return { error: I18N.t('rangeOrder').replace('{v}', chunk) };
+                ranges.push({ start: start, end: end });
+            }
+            ranges.sort((a, b) => a.start - b.start);
+            for (let i = 1; i < ranges.length; i++) {
+                if (ranges[i].start < ranges[i - 1].end) {
+                    return { error: I18N.t('rangeOverlap')
+                        .replace('{a}', fmtRangeTime(ranges[i - 1].start) + '-' + fmtRangeTime(ranges[i - 1].end))
+                        .replace('{b}', fmtRangeTime(ranges[i].start) + '-' + fmtRangeTime(ranges[i].end)) };
+                }
+            }
+            return { ranges: ranges };
+        }
+
+        // Rewrites the box into the canonical form. Called on blur, and before
+        // submitting so a bad value can never reach the backend.
+        function normaliseRanges(showError) {
+            if (rangeMode() === 'full') return true;
+            const box = rangeBox();
+            const errEl = document.getElementById('rangeError');
+            const res = parseRanges(box.value);
+            if (res.error) {
+                if (showError) { errEl.textContent = res.error; errEl.style.display = ''; }
+                return false;
+            }
+            box.value = res.ranges
+                .map(r => fmtRangeTime(r.start) + '-' + fmtRangeTime(r.end)).join(',');
+            errEl.style.display = 'none';
+            return true;
+        }
+
+        function rangeText() {
+            return rangeMode() === 'full' ? '' : rangeBox().value.trim();
+        }
+
+        document.querySelectorAll('input[name="rangeMode"]').forEach(el => {
+            el.addEventListener('change', () => {
+                const full = rangeMode() === 'full';
+                document.getElementById('rangeGroup').style.display = full ? 'none' : '';
+                if (!full) normaliseRanges(false);
+            });
+        });
+        rangeBox().addEventListener('blur', () => normaliseRanges(true));
+
         // API key test: send a tiny prompt via the pywebview bridge
         async function runApiTest(resultEl) {
             if (!window.pywebview || !window.pywebview.api) {
@@ -332,6 +448,10 @@
                 return;
             }
 
+            // Never start a run with an unusable range: the backend rejects it
+            // anyway, but failing here keeps the value visible for correction.
+            if (!normaliseRanges(true)) return;
+
             const options = {
                 backend: backend,
                 api_key: backend === 'openai-compatible' ? document.getElementById('openaiApiKey').value : document.getElementById('apiKey').value,
@@ -341,6 +461,8 @@
                 use_context_extender: document.getElementById('useContextExtender').checked,
                 video_type: document.getElementById('videoType').value,
                 custom_opening: document.getElementById('customPrompt').value.trim(),
+                range_mode: rangeMode(),
+                time_ranges: rangeText(),
             };
             
             // Show progress
@@ -621,10 +743,33 @@
             });
         }
 
+        // A user-picked range is keyed by its own unit id ("C1") rather than by
+        // shot numbers - that is what its thumbnail and its reprocess selection
+        // are keyed on. Everything is a string so both kinds share one set.
+        function unitKeys(u) {
+            return u.mode === 'custom' ? [String(u.unit_id)] : (u.shot_ids || []).map(String);
+        }
+
+        function renderThumb(u, key, d) {
+            const custom = u.mode === 'custom';
+            const s = custom ? null : d.shots.find(x => String(x.shot_id) === key);
+            if (!custom && !s) return '';
+            const label = custom ? `${I18N.t('customMode')} #${key}` : `#${key}`;
+            const range = s ? `${dFmt(s.start_time)}–${dFmt(s.end_time)}`
+                            : `${dFmt(u.start)}–${dFmt(u.end)}`;
+            const sel = dSelectedShots.has(key) ? 'selected' : '';
+            const src = custom ? (u.thumb || '') : (s.thumb || '');
+            return `<div class="shot-thumb ${sel}" id="dshot-${key}" onclick="toggleDbShot('${key}')">
+                <img src="${src}" alt="${label}">
+                <span class="tick">✓</span>
+                <span class="time">${label} ${range}</span>
+            </div>`;
+        }
+
         function toggleDbAllShots(selectAll) {
             if (!currentJob) return;
-            currentJob.units.forEach(u => (u.shot_ids || []).forEach(sid => {
-                selectAll ? dSelectedShots.add(sid) : dSelectedShots.delete(sid);
+            currentJob.units.forEach(u => unitKeys(u).forEach(k => {
+                selectAll ? dSelectedShots.add(k) : dSelectedShots.delete(k);
             }));
             applyDbSelection();
         }
@@ -632,17 +777,10 @@
         function renderDbUnits(d) {
             const html = d.units.map(u => {
                 const mode = u.mode === 'ad_interval'
-                    ? `<span class="badge gray">${I18N.t('gapMode')}</span>` : '';
-                const thumbs = (u.shot_ids || []).map(sid => {
-                    const s = d.shots.find(x => x.shot_id === sid);
-                    if (!s) return '';
-                    const sel = dSelectedShots.has(sid) ? 'selected' : '';
-                    return `<div class="shot-thumb ${sel}" id="dshot-${sid}" onclick="toggleDbShot(${sid})">
-                        <img src="${s.thumb || ''}" alt="shot ${sid}">
-                        <span class="tick">✓</span>
-                        <span class="time">#${sid} ${dFmt(s.start_time)}–${dFmt(s.end_time)}</span>
-                    </div>`;
-                }).join('');
+                    ? `<span class="badge gray">${I18N.t('gapMode')}</span>`
+                    : u.mode === 'custom'
+                        ? `<span class="badge gray">${I18N.t('customMode')}</span>` : '';
+                const thumbs = unitKeys(u).map(k => renderThumb(u, k, d)).join('');
                 const desc = u.description || '';
                 const ad = u.ad_sentence || '';
                 return `<div class="unit-card">
@@ -666,9 +804,9 @@
 
         function applyDbSelection() {
             if (currentJob) {
-                currentJob.units.forEach(u => (u.shot_ids || []).forEach(sid => {
-                    const el = d$('dshot-' + sid);
-                    if (el) el.classList.toggle('selected', dSelectedShots.has(sid));
+                currentJob.units.forEach(u => unitKeys(u).forEach(k => {
+                    const el = d$('dshot-' + k);
+                    if (el) el.classList.toggle('selected', dSelectedShots.has(k));
                 }));
             }
             const c = d$('dSelCount');

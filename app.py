@@ -2,6 +2,7 @@
 Flask web server for Shot-by-Shot Video Processor
 """
 import os
+import re
 import sys
 import uuid
 import json
@@ -25,6 +26,7 @@ from processing.film_grammar import get_effective_shot_scale, select_prompt_vari
 from processing.character_recognizer import detect_faces, extract_face_embeddings, cluster_faces
 from processing.vtt_writer import write_vtt
 from processing import history_engine as history
+from processing import time_ranges
 
 # Lazy import to mirror vlm_describer/llm_summarizer (also keeps the frozen
 # PyArmor builds from resolving a private module at import time).
@@ -259,6 +261,15 @@ def process_video_task(task_id, video_path, options):
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         video_duration = frame_count / fps if fps > 0 else 0
         cap.release()
+
+        # Ranges were validated at upload time; this second pass also catches
+        # ones that run past the end of the video.
+        range_mode, custom_ranges = time_ranges.validate_mode(
+            options.get("range_mode"), options.get("time_ranges"),
+            video_duration if video_duration > 0 else None)
+        if custom_ranges:
+            logger.info(f"Task {task_id}: range mode '{range_mode}' - {len(custom_ranges)} "
+                        f"range(s) {time_ranges.format_ranges(custom_ranges)}")
         
         status["step"] = "shot_detection"
         status["detail"] = f"Detecting shots... ({video_duration:.0f}s video)"
@@ -331,12 +342,25 @@ def process_video_task(task_id, video_path, options):
                 "mode": "shot",
             })
             logger.info(f"Task {task_id}: no shots detected; using full-video as single unit ({video_duration:.1f}s)")
+        if custom_ranges:
+            # A range is described exactly as asked for - never snapped to a
+            # shot, and never shortened to a nearby dialogue gap. In "extra"
+            # mode both passes are kept, even where they overlap.
+            custom_units = time_ranges.build_custom_units(custom_ranges, shots)
+            units = custom_units if range_mode == "only" else units + custom_units
+            logger.info(f"Task {task_id}: range mode '{range_mode}' -> {len(custom_units)} "
+                        f"user-range units ({len(units)} total)")
         if not gap_detection_active:
             reason = "transcription disabled" if not options.get("use_whisper", True) else f"transcription failed ({type(transcription_error).__name__})" if transcription_error else "no subtitles produced"
             logger.warning(f"Task {task_id}: dialogue-gap detection NOT active - {reason}. Using {len(units)} per-shot units instead.")
-        status["detail"] = f"{len(units)} AD units to describe ({'dialogue-gap' if gap_detection_active else 'shot-based'})"
+        units_label = "dialogue-gap" if gap_detection_active else "shot-based"
+        if range_mode == "only":
+            units_label = "user ranges"
+        elif range_mode == "extra":
+            units_label = f"{units_label} + user ranges"
+        status["detail"] = f"{len(units)} AD units to describe ({units_label})"
         status["progress"] = 40
-        logger.info(f"Task {task_id}: built {len(units)} AD units (mode={'dialogue-gap' if gap_detection_active else 'shot-based'})")
+        logger.info(f"Task {task_id}: built {len(units)} AD units (mode={units_label})")
         history.save_units(task_id, units, DATA_DIR)
         history.begin_run(task_id, 0, DATA_DIR, kind="initial",
                           gap_detection_active=gap_detection_active)
@@ -352,7 +376,9 @@ def process_video_task(task_id, video_path, options):
         status["step"] = "frames"
         for i, unit in enumerate(units):
             frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-            if options.get("use_context_extender") and shots:
+            # Context extension follows shots; a user range is not a shot, so it
+            # is deliberately never extended.
+            if options.get("use_context_extender") and shots and unit.get("mode") != "custom":
                 context_shots = _get_context_shots(shots, unit["shot_ids"])
                 frames_b64 = _extract_frames_with_context(video_path, frame_shot, context_shots)
             else:
@@ -398,7 +424,7 @@ def process_video_task(task_id, video_path, options):
                     # rebuilt deterministically from the unit + run options.
                     frames_b64 = history.load_unit_frames(task_id, unit["unit_id"], DATA_DIR)
                     film_grammar = {"video_type": options.get("video_type", "movie"), "label_type": "none",
-                                    "char_text": "", "current_shots": [s - 1 for s in unit["shot_ids"]],
+                                    "char_text": "", "current_shots": time_ranges.current_shot_indices(unit, shots),
                                     "threads": threads, "shot_scales": shot_scales, "prompt_variant": 4,
                                     "custom_opening": options.get("custom_opening")}
                     logger.info(f"Task {task_id}: calling API for unit {i+1} ({len(frames_b64)} frames)")
@@ -436,6 +462,7 @@ def process_video_task(task_id, video_path, options):
         # some shots may have succeeded even when the API quota ran out, and the
         # user explicitly wants those partial descriptions preserved.
         stage1_results = [{"shot_id": u["unit_id"], "start": u["start"], "end": u["end"],
+                           "mode": u.get("mode"),
                            "description": descriptions_dict.get(u["unit_id"], "")} for u in units]
         success_count = sum(1 for d in descriptions_dict.values() if str(d).strip())
         has_any_description = success_count > 0
@@ -591,6 +618,15 @@ def upload_video():
             return jsonify({"error": "A task is already processing. Wait for it to complete before uploading another video."}), 409
 
     filename = secure_filename(file.filename)
+    # "describe only / in addition" needs usable ranges; reject bad input here
+    # so the user gets the message straight away instead of a failed task. The
+    # end-of-video check is deferred until the duration is known.
+    try:
+        time_ranges.validate_mode(request.form.get("range_mode"), request.form.get("time_ranges"))
+    except time_ranges.RangeError as e:
+        logger.info(f"Upload rejected: {e}")
+        return jsonify({"error": str(e)}), 400
+
     task_id = str(uuid.uuid4())
     video_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{task_id}_{filename}")
     file.save(video_path)
@@ -603,7 +639,9 @@ def upload_video():
                "use_whisper": request.form.get("use_whisper") != "false",
                "use_context_extender": request.form.get("use_context_extender") == "true",
                "skip_stage2": request.form.get("skip_stage2") == "true",
-               "use_character_bank": request.form.get("use_character_bank") == "true"}
+               "use_character_bank": request.form.get("use_character_bank") == "true",
+               "range_mode": request.form.get("range_mode") or "full",
+               "time_ranges": request.form.get("time_ranges") or ""}
     threading.Thread(target=process_video_task, args=(task_id, video_path, options), daemon=True).start()
     return jsonify({"task_id": task_id, "status": "started"})
 
@@ -742,8 +780,12 @@ def history_detail(job_id):
     return jsonify(detail)
 
 
-@app.route('/history/<job_id>/thumb/<int:shot_id>')
+@app.route('/history/<job_id>/thumb/<shot_id>')
 def history_thumb(job_id, shot_id):
+    # Not <int:>: a user-picked range has its own thumbnail keyed by its unit id
+    # ("C1") rather than by a shot number.
+    if not re.match(r'^[A-Za-z0-9_-]+$', shot_id):
+        return jsonify({"error": "bad request"}), 400
     p = history.thumb_path(job_id, shot_id, DATA_DIR)
     if not os.path.isfile(p):
         return jsonify({"error": "not found"}), 404
@@ -796,13 +838,19 @@ def reprocess_route(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
     data = request.get_json(silent=True) or {}
-    shot_ids = [int(x) for x in (data.get("shot_ids") or [])]
-    if not shot_ids:
+    # A shot is selected by number; a user-picked range is selected by its own
+    # unit id ("C1"), so both forms are accepted here.
+    selected = set()
+    for x in (data.get("shot_ids") or []):
+        try:
+            selected.add(int(x))
+        except (TypeError, ValueError):
+            selected.add(str(x))
+    if not selected:
         return jsonify({"error": "Please select at least one shot"}), 400
-    selected = set(shot_ids)
     selected_units = set()
     for u in history.load_units(job_id, DATA_DIR):
-        if any(s in selected for s in u.get("shot_ids", [])):
+        if u.get("unit_id") in selected or any(s in selected for s in u.get("shot_ids", [])):
             selected_units.add(u["unit_id"])
     if not selected_units:
         return jsonify({"error": "Selection maps to no AD units"}), 400
@@ -824,10 +872,10 @@ def reprocess_route(job_id):
         "skip_stage2": bool(data.get("skip_stage2", False)),
     }
     threading.Thread(target=_reprocess_web_thread,
-                     args=(task_id, job_id, sorted(selected_units), options),
+                     args=(task_id, job_id, sorted(selected_units, key=str), options),
                      daemon=True).start()
     logger.info(f"Job {job_id}: reprocess started task {task_id} "
-                f"(units={sorted(selected_units)}, backend={options['backend']})")
+                f"(units={sorted(selected_units, key=str)}, backend={options['backend']})")
     return jsonify({"task_id": task_id, "status": "started"})
 
 

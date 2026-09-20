@@ -93,7 +93,18 @@
             webOpenHint: "Browsers can't open local folders - copy the path and paste it into File Explorer.",
             unitLabel: "AD unit",
             gapMode: "dialogue-gap",
-            shotMode: "per-shot"
+            shotMode: "per-shot",
+            customMode: "user range",
+            rangeScope: "Describe:",
+            rangeFull: "Whole video",
+            rangeExtra: "Whole video, plus the segments below",
+            rangeOnly: "Only the segments below",
+            rangeNote: "hh:mm:ss-hh:mm:ss, separated by commas.",
+            rangeEmpty: "Enter at least one time range as hh:mm:ss-hh:mm:ss.",
+            rangeBadFormat: "'{v}' is not a time range - use hh:mm:ss-hh:mm:ss.",
+            rangeBadTime: "'{v}' is not a valid time - use hh:mm:ss.",
+            rangeOrder: "'{v}': the start time must be earlier than the end time.",
+            rangeOverlap: "{a} and {b} overlap."
         },
         zh: {
             appTitle: "口述影像助理",
@@ -186,7 +197,18 @@
             webOpenHint: "瀏覽器無法直接開啟本機資料夾，請複製路徑後貼到檔案總管。",
             unitLabel: "AD 單位",
             gapMode: "對話間隙",
-            shotMode: "單鏡頭"
+            shotMode: "單鏡頭",
+            customMode: "自訂片段",
+            rangeScope: "描述範圍：",
+            rangeFull: "整段影片",
+            rangeExtra: "整段影片，另外加上以下片段",
+            rangeOnly: "只描述以下片段",
+            rangeNote: "格式為 hh:mm:ss-hh:mm:ss，多段請以逗號分隔。",
+            rangeEmpty: "請輸入至少一個時間範圍，格式為 hh:mm:ss-hh:mm:ss。",
+            rangeBadFormat: "「{v}」格式不正確，應為 hh:mm:ss-hh:mm:ss。",
+            rangeBadTime: "「{v}」不是有效時間，應為 hh:mm:ss。",
+            rangeOrder: "「{v}」的開始時間必須早於結束時間。",
+            rangeOverlap: "{a} 與 {b} 重疊。"
         }
     };
 

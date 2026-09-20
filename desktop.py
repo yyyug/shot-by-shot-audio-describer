@@ -180,6 +180,7 @@ from processing.film_grammar import get_effective_shot_scale, select_prompt_vari
 from processing.character_recognizer import detect_faces, extract_face_embeddings, cluster_faces
 from processing.vtt_writer import write_vtt
 from processing import history_engine as history
+from processing import time_ranges
 
 # Lazy import to mirror vlm_describer/llm_summarizer (also keeps the frozen
 # PyArmor builds from resolving a private module at import time).
@@ -253,6 +254,16 @@ class AppBridge:
             return {"task_id": None, "status": "busy",
                     "error": "A task is already processing. Wait for it to complete before starting another."}
 
+        # "describe only / in addition" needs usable ranges; reject bad input
+        # here so the user gets the message instead of a failed task. The
+        # end-of-video check waits until the duration is known.
+        try:
+            time_ranges.validate_mode((options or {}).get("range_mode"),
+                                      (options or {}).get("time_ranges"))
+        except time_ranges.RangeError as e:
+            logger.info(f"Cannot start - {e}")
+            return {"task_id": None, "status": "error", "error": str(e)}
+
         task_id = str(uuid.uuid4())
         self._active_task_id = task_id
         self.processing_status[task_id] = {"status": "processing", "step": "initializing"}
@@ -291,6 +302,15 @@ class AppBridge:
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             video_duration = frame_count / fps if fps > 0 else 0
             cap.release()
+
+            # Ranges were validated in process_video; this second pass also
+            # catches ones that run past the end of the video.
+            range_mode, custom_ranges = time_ranges.validate_mode(
+                options.get("range_mode"), options.get("time_ranges"),
+                video_duration if video_duration > 0 else None)
+            if custom_ranges:
+                logger.info(f"Range mode '{range_mode}' - {len(custom_ranges)} range(s) "
+                            f"{time_ranges.format_ranges(custom_ranges)}")
             
             # Step 1: Shot detection with callback
             status["step"] = "shot_detection"
@@ -350,6 +370,7 @@ class AppBridge:
                         "start": interval["start"],
                         "end": interval["end"],
                         "shot_ids": interval["shot_ids"],
+                        "mode": "ad_interval",
                     })
             if not units:
                 logger.info("No dialogue-gap intervals; falling back to shot-based units")
@@ -359,6 +380,7 @@ class AppBridge:
                         "start": shot["start_time"],
                         "end": shot["end_time"],
                         "shot_ids": [shot["shot_id"]],
+                        "mode": "shot",
                     })
             if not units:
                 logger.info(f"No shots detected; using full video as single unit ({video_duration:.1f}s)")
@@ -367,7 +389,22 @@ class AppBridge:
                     "start": 0,
                     "end": video_duration,
                     "shot_ids": [],
+                    "mode": "shot",
                 })
+            if custom_ranges:
+                # A range is described exactly as asked for - never snapped to a
+                # shot, and never shortened to a nearby dialogue gap. In "extra"
+                # mode both passes are kept, even where they overlap.
+                custom_units = time_ranges.build_custom_units(custom_ranges, shots)
+                units = custom_units if range_mode == "only" else units + custom_units
+                logger.info(f"Range mode '{range_mode}' -> {len(custom_units)} "
+                            f"user-range units ({len(units)} total)")
+            units_label = "dialogue-gap" if subtitles else "shot-based"
+            if range_mode == "only":
+                units_label = "user ranges"
+            elif range_mode == "extra":
+                units_label = f"{units_label} + user ranges"
+            status["detail"] = f"{len(units)} AD units to describe ({units_label})"
             status["progress"] = 40
             history.save_units(task_id, units, DATA_DIR)
             history.begin_run(task_id, 0, DATA_DIR,
@@ -385,7 +422,9 @@ class AppBridge:
             frame_counts = {}
             for i, unit in enumerate(units):
                 frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-                if options.get("use_context_extender") and shots:
+                # Context extension follows shots; a user range is not a shot,
+                # so it is deliberately never extended.
+                if options.get("use_context_extender") and shots and unit.get("mode") != "custom":
                     context_shots = self._get_context_shots(shots, unit["shot_ids"])
                     frames_b64 = self._extract_frames_with_context(video_path, frame_shot, context_shots)
                 else:
@@ -447,7 +486,7 @@ class AppBridge:
                             "video_type": options.get("video_type", "movie"),
                             "label_type": "none",
                             "char_text": "",
-                            "current_shots": [s - 1 for s in unit["shot_ids"]],
+                            "current_shots": time_ranges.current_shot_indices(unit, shots),
                             "threads": [[j for j in range(len(shots))]],
                             "shot_scales": [2] * len(shots),
                             "prompt_variant": 4,
@@ -499,6 +538,7 @@ class AppBridge:
                     "shot_id": unit["unit_id"],
                     "start": unit["start"],
                     "end": unit["end"],
+                    "mode": unit.get("mode"),
                     "description": descriptions_dict.get(unit["unit_id"], "")
                 })
             success_count = sum(1 for v in descriptions_dict.values() if str(v).strip())
@@ -770,6 +810,10 @@ class AppBridge:
             rec = dict(u)
             rec["description"] = stage1.get(str(u["unit_id"]), {}).get("description", "")
             rec["ad_sentence"] = stage2.get(str(u["unit_id"]), "")
+            # A user-picked range is previewed by its own thumbnail, not by the
+            # shots it happens to cover.
+            if u.get("mode") == "custom":
+                rec["thumb"] = history.thumb_data_url(job_id, u["unit_id"], DATA_DIR)
             units_out.append(rec)
 
         runs = [history.load_run_meta(job_id, r, DATA_DIR)
@@ -795,9 +839,17 @@ class AppBridge:
             return {"task_id": None, "status": "busy",
                     "error": "A task is already processing. Wait for it to complete before starting another."}
         units = history.load_units(job_id, DATA_DIR)
-        selected = set(int(x) for x in (shot_ids or []))
+        # A shot is selected by number; a user-picked range is selected by its
+        # own unit id ("C1"), so both forms are accepted here.
+        selected = set()
+        for x in (shot_ids or []):
+            try:
+                selected.add(int(x))
+            except (TypeError, ValueError):
+                selected.add(str(x))
         selected_units = {u["unit_id"] for u in units
-                          if any(s in selected for s in u.get("shot_ids", []))}
+                          if u.get("unit_id") in selected
+                          or any(s in selected for s in u.get("shot_ids", []))}
         if not selected_units:
             return {"task_id": None, "status": "error",
                     "error": "Selection maps to no AD units"}
@@ -805,7 +857,7 @@ class AppBridge:
         self.processing_status[task_id] = {"status": "processing", "step": "initializing"}
         thread = threading.Thread(
             target=self._reprocess_task,
-            args=(task_id, job_id, sorted(selected_units), options),
+            args=(task_id, job_id, sorted(selected_units, key=str), options),
             daemon=True)
         thread.start()
         return {"task_id": task_id, "status": "started"}

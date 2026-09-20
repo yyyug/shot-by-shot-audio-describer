@@ -48,6 +48,10 @@ AD_SPEED = {
     "stage_performance": 0.2695  # use tvad speed
 }
 
+# Floor applied to user-picked ranges ("describe only / in addition"): they can
+# be far shorter than any detected shot or dialogue gap.
+CUSTOM_MIN_WORD_LIMIT = 20
+
 # Load few-shot training examples
 GT_EXAMPLES = {}
 TRAIN_DIR = os.path.join(os.path.dirname(__file__), '..', 'stage2', 'gt_ad_train')
@@ -416,9 +420,15 @@ def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str 
     results = []
     for item in stage1_descriptions:
         duration = item["end"] - item["start"]
+        # A range the user picked can be arbitrarily short, and duration/speed
+        # would then ask for a one- or two-word AD sentence, which is useless.
+        word_limit = estimate_word_limit(duration, video_type)
+        if item.get("mode") == "custom":
+            word_limit = max(CUSTOM_MIN_WORD_LIMIT, word_limit)
         try:
             ad_sentence = summarize_to_ad(item["description"], api_key, backend, 
                                          duration_seconds=duration, video_type=video_type, examples=examples,
+                                         word_limit=word_limit,
                                          openai_url=openai_url, openai_model=openai_model, usage_acc=usage_acc)
         except Exception as e:
             logger.warning(f"summarize_to_ad failed for shot {item['shot_id']}: {e}", exc_info=True)

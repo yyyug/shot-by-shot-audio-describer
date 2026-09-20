@@ -11,6 +11,7 @@ from processing.dialogue_gap_detector import detect_ad_intervals
 from processing.film_grammar import get_effective_shot_scale, select_prompt_variant
 from processing.vlm_describer import describe_frames, build_film_grammar_prompt
 from processing.llm_summarizer import batch_summarize, estimate_word_limit
+from processing import time_ranges
 
 
 def calculate_num_frames(duration_seconds: float) -> int:
@@ -113,8 +114,20 @@ def main():
                         help="Include 2 surrounding shots (before/after) in VLM descriptions")
     parser.add_argument("--video-type", choices=["movie", "tv_series"], default="movie",
                        help="Video type for verb list selection")
+    parser.add_argument("--range-mode", choices=list(time_ranges.RANGE_MODES), default="full",
+                        help="full: describe the whole video (default); extra: also describe "
+                             "--ranges; only: describe --ranges and nothing else")
+    parser.add_argument("--ranges", default="",
+                        help="Ranges for --range-mode, as hh:mm:ss-hh:mm:ss separated by commas")
 
     args = parser.parse_args()
+
+    if args.range_mode != "full":
+        try:
+            time_ranges.validate_mode(args.range_mode, args.ranges)
+        except time_ranges.RangeError as e:
+            print(f"Error: {e}")
+            sys.exit(2)
 
     if not os.path.exists(args.video):
         print(f"Error: Video file not found: {args.video}")
@@ -153,6 +166,7 @@ def main():
                 "start": interval["start"],
                 "end": interval["end"],
                 "shot_ids": interval["shot_ids"],
+                "mode": "ad_interval",
             })
     if not units:
         for shot in shots:
@@ -161,6 +175,7 @@ def main():
                 "start": shot["start_time"],
                 "end": shot["end_time"],
                 "shot_ids": [shot["shot_id"]],
+                "mode": "shot",
             })
     if not units:
         import cv2
@@ -174,7 +189,24 @@ def main():
             "start": 0,
             "end": end_t,
             "shot_ids": [],
+            "mode": "shot",
         })
+
+    # User-picked ranges: "extra" appends them to the normal pass, "only"
+    # replaces it. A range is taken literally (never snapped to a shot) and the
+    # dialogue-gap logic never applies to it.
+    range_mode = args.range_mode
+    if range_mode != "full":
+        import cv2
+        cap = cv2.VideoCapture(args.video)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        duration = (cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps) if fps > 0 else 0
+        cap.release()
+        custom_ranges = time_ranges.parse_ranges(args.ranges, duration if duration > 0 else None)
+        custom_units = time_ranges.build_custom_units(custom_ranges, shots)
+        units = custom_units if range_mode == "only" else units + custom_units
+        print(f"  Range mode '{range_mode}': {time_ranges.format_ranges(custom_ranges)} "
+              f"({len(custom_units)} units, {len(units)} total)")
 
     # Step 4: VLM description (Stage 1)
     descriptions_dict = {}
@@ -205,7 +237,7 @@ def main():
                     "video_type": args.video_type,
                     "label_type": "none",
                     "char_text": "",
-                    "current_shots": [s - 1 for s in unit["shot_ids"]],
+                    "current_shots": time_ranges.current_shot_indices(unit, shots),
                     "threads": threads,
                     "shot_scales": shot_scales,
                     "prompt_variant": prompt_variant
@@ -231,6 +263,7 @@ def main():
                 "shot_id": unit["unit_id"],
                 "start": unit["start"],
                 "end": unit["end"],
+                "mode": unit.get("mode"),
                 "description": descriptions_dict.get(unit["unit_id"], "")
             })
         
