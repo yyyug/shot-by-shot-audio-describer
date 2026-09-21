@@ -10,16 +10,26 @@
 # Usage:  powershell -ExecutionPolicy Bypass -File build.ps1
 #         powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 #         powershell -ExecutionPolicy Bypass -File build.ps1 -Obfuscate
+#         powershell -ExecutionPolicy Bypass -File build.ps1 -Obfuscate -SkipInno `
+#             -DistDir dist-pyinstaller -WorkDir build-pyinstaller
+#
+# -DistDir / -WorkDir let a build land in its own folder so it never overwrites
+# an existing distribution; both default to the historical dist\ and build\.
 
 param(
     [switch]$SkipInno,
-    [switch]$Obfuscate
+    [switch]$Obfuscate,
+    [string]$DistDir = "dist",
+    [string]$WorkDir = "build"
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BuildVenv = Join-Path $Root ".build-venv"
 $Ico = Join-Path $Root "packaging\shot.ico"
+$DistPath = if ([System.IO.Path]::IsPathRooted($DistDir)) { $DistDir } else { Join-Path $Root $DistDir }
+$WorkPath = if ([System.IO.Path]::IsPathRooted($WorkDir)) { $WorkDir } else { Join-Path $Root $WorkDir }
+$PortableDir = Join-Path $DistPath "ShotByShotPortable"
 
 function Write-Step([string]$Msg) { Write-Host "`n==> $Msg" -ForegroundColor Cyan }
 function Write-Ok([string]$Msg) { Write-Host "    $Msg" -ForegroundColor Green }
@@ -117,16 +127,16 @@ if ($Obfuscate) {
 # ---------------------------------------------------------------- pyinstaller
 Write-Step "Running PyInstaller (desktop + web versions - bundles ~1GB of models, may take 10+ minutes)..."
 & $VenvPython -m PyInstaller --noconfirm --clean `
-    --distpath (Join-Path $Root "dist") `
-    --workpath (Join-Path $Root "build") `
+    --distpath $DistPath `
+    --workpath $WorkPath `
     (Join-Path $Root "packaging\ShotByShotDesktop.spec")
 if ($LASTEXITCODE -ne 0) { Write-Warn "PyInstaller build (desktop) failed."; exit 1 }
-Write-Ok "Built: $(Join-Path $Root 'dist\ShotByShotPortable')"
+Write-Ok "Built: $PortableDir"
 
 # ---------------------------------------------------------------- few-shot training data
 Write-Step "Bundling few-shot GT training data (stage2\gt_ad_train)..."
 $gtSrc = Join-Path $Root "stage2\gt_ad_train"
-$gtDst = Join-Path $Root "dist\ShotByShotPortable\_internal\stage2\gt_ad_train"
+$gtDst = Join-Path $PortableDir "_internal\stage2\gt_ad_train"
 if ((Test-Path $gtSrc) -and -not (Test-Path $gtDst)) {
     New-Item -ItemType Directory -Path $gtDst -Force | Out-Null
     Copy-Item (Join-Path $gtSrc "cmdad_train.csv") $gtDst -Force
@@ -139,7 +149,7 @@ if ((Test-Path $gtSrc) -and -not (Test-Path $gtDst)) {
 # ---------------------------------------------------------------- trim long paths
 Write-Step "Trimming deeply-nested third-party license files (avoids Inno long-path errors)..."
 $trimmed = 0
-Get-ChildItem (Join-Path $Root "dist\ShotByShotPortable\_internal") -Directory -Recurse `
+Get-ChildItem (Join-Path $PortableDir "_internal") -Directory -Recurse `
     | Where-Object { $_.FullName -match "torch-[^\\]+\.dist-info\\licenses\\third_party$" } | ForEach-Object {
     Remove-Item $_.FullName -Recurse -Force
     $trimmed++
@@ -149,11 +159,17 @@ if ($trimmed -gt 0) { Write-Ok "Removed $trimmed license trees." }
 # ---------------------------------------------------------------- portable extras
 Write-Step "Adding portable extras (Outputs folder shortcut)..."
 $batSrc = Join-Path $Root "packaging\Shot-by-Shot Outputs.bat"
-Copy-Item $batSrc (Join-Path $Root "dist\ShotByShotPortable") -Force
+Copy-Item $batSrc $PortableDir -Force
 Write-Ok "Added 'Shot-by-Shot Outputs.bat' next to the exe."
 
 # ---------------------------------------------------------------- inno setup
+# The installer .iss hardcodes dist\ShotByShotPortable, so it only makes sense
+# for the default output folder; a custom -DistDir is a portable-only build.
 if ($SkipInno) { Write-Ok "Skipping Inno Setup (as requested)."; exit 0 }
+if ($DistPath -ne (Join-Path $Root "dist")) {
+    Write-Ok "Skipping Inno Setup (portable-only build in $DistPath)."
+    exit 0
+}
 
 $iscc = $null
 foreach ($candidate in @(

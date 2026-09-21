@@ -24,7 +24,9 @@ models/
 
 # Build artifacts
 build/
+build-pyinstaller/
 dist/
+dist-pyinstaller/
 dist-nuitka/
 .build-obf/
 .build-venv/
