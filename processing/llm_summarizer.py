@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 try:
     from stage2.promptloader import get_user_prompt
 except ImportError:
-    def get_user_prompt(mode, prompt_idx, verb_list, text_pred, word_limit, examples):
+    def get_user_prompt(mode, prompt_idx, verb_list, text_pred, word_limit, examples, lang="en"):
         return f"Summarize: {text_pred} in {word_limit} words."
 
 # API URLs
@@ -39,6 +39,14 @@ VERB_LISTS = {
     "movie": ['look', 'turn', 'take', 'hold', 'pull', 'walk', 'run', 'watch', 'stare', 'grab', 'fall', 'get', 'go', 'open', 'smile'],
     "tv_series": ['look', 'walk', 'turn', 'stare', 'take', 'hold', 'smile', 'leave', 'pull', 'watch', 'open', 'go', 'step', 'get', 'enter'],
     "stage_performance": ['sing', 'dance', 'perform', 'move', 'gesture', 'walk', 'turn', 'look', 'smile', 'wave', 'jump', 'spin', 'play', 'hold', 'raise']
+}
+
+# Same lists (same order = same priority) in Traditional Chinese, used when the
+# UI language is Chinese so the prompt stays in one language end to end.
+VERB_LISTS_ZH = {
+    "movie": ['看', '轉身', '拿', '握住', '拉', '走', '跑', '注視', '凝視', '抓', '倒下', '取得', '前往', '打開', '微笑'],
+    "tv_series": ['看', '走', '轉身', '凝視', '拿', '握住', '微笑', '離開', '拉', '注視', '打開', '前往', '跨步', '取得', '進入'],
+    "stage_performance": ['唱', '跳舞', '表演', '移動', '比劃', '走', '轉身', '看', '微笑', '揮手', '跳', '旋轉', '演奏', '握住', '抬起']
 }
 
 # Words per second (from original repo)
@@ -371,7 +379,8 @@ def summarize_to_ad(
     retry_delay: float = 1.0,
     openai_url: str = None,
     openai_model: str = None,
-    usage_acc=None
+    usage_acc=None,
+    lang: str = None
 ) -> str:
     """Summarize Stage 1 description into concise AD sentence."""
     if not stage1_description:
@@ -387,9 +396,11 @@ def summarize_to_ad(
     if examples is None and duration_seconds is not None:
         examples = sample_few_shot_examples(video_type, duration_seconds)
     
-    verb_list = VERB_LISTS.get(video_type, VERB_LISTS["movie"])
+    verb_lists = VERB_LISTS_ZH if str(lang or "").lower().startswith("zh") else VERB_LISTS
+    verb_list = verb_lists.get(video_type, verb_lists["movie"])
     prompt = get_user_prompt(mode=mode, prompt_idx=0, verb_list=verb_list, 
-                            text_pred=stage1_description, word_limit=word_limit, examples=examples or [])
+                            text_pred=stage1_description, word_limit=word_limit, examples=examples or [],
+                            lang=lang)
     
     if backend.startswith("gemini"):
         model = backend  # Use the full model name from dropdown
@@ -415,7 +426,7 @@ def summarize_to_ad(
 def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str = "gemini", 
                     video_type: str = "movie", examples: List[str] = None,
                     openai_url: str = None, openai_model: str = None,
-                    usage_acc=None) -> List[dict]:
+                    usage_acc=None, lang: str = None) -> List[dict]:
     """Batch summarize multiple Stage 1 descriptions."""
     results = []
     for item in stage1_descriptions:
@@ -429,7 +440,8 @@ def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str 
             ad_sentence = summarize_to_ad(item["description"], api_key, backend, 
                                          duration_seconds=duration, video_type=video_type, examples=examples,
                                          word_limit=word_limit,
-                                         openai_url=openai_url, openai_model=openai_model, usage_acc=usage_acc)
+                                         openai_url=openai_url, openai_model=openai_model, usage_acc=usage_acc,
+                                         lang=lang)
         except Exception as e:
             logger.warning(f"summarize_to_ad failed for shot {item['shot_id']}: {e}", exc_info=True)
             ad_sentence = ""

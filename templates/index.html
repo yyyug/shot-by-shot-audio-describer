@@ -478,6 +478,8 @@
             formData.append('custom_opening', document.getElementById('customPrompt').value.trim());
             formData.append('range_mode', rangeMode());
             formData.append('time_ranges', rangeText());
+            // Prompt language follows the UI language (zh UI -> Chinese prompts).
+            formData.append('lang', I18N.lang());
 
             try {
                 const response = await fetch('/upload', { method: 'POST', body: formData });
@@ -871,7 +873,8 @@
                 openai_url: isOA ? $('rpUrl').value.trim() : null,
                 openai_model: isOA ? $('rpModel').value.trim() : null,
                 video_type: currentJob.job.video_type || 'movie',
-                use_context_extender: $('rpContext').checked
+                use_context_extender: $('rpContext').checked,
+                lang: I18N.lang()
             };
             let data;
             try {

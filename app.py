@@ -426,7 +426,8 @@ def process_video_task(task_id, video_path, options):
                     film_grammar = {"video_type": options.get("video_type", "movie"), "label_type": "none",
                                     "char_text": "", "current_shots": time_ranges.current_shot_indices(unit, shots),
                                     "threads": threads, "shot_scales": shot_scales, "prompt_variant": 4,
-                                    "custom_opening": options.get("custom_opening")}
+                                    "custom_opening": options.get("custom_opening"),
+                                    "lang": options.get("lang")}
                     logger.info(f"Task {task_id}: calling API for unit {i+1} ({len(frames_b64)} frames)")
                     desc = describe_frames(frames_b64, api_key, backend=backend, film_grammar=film_grammar,
                                            openai_url=options.get("openai_url"),
@@ -498,7 +499,8 @@ def process_video_task(task_id, video_path, options):
                                                 video_type=options.get("video_type", "movie"),
                                                 openai_url=options.get("openai_url"),
                                                 openai_model=options.get("openai_model"),
-                                                usage_acc=stage2_usage)
+                                                usage_acc=stage2_usage,
+                                                lang=options.get("lang"))
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
                     non_empty = sum(1 for v in ad_sentence_map.values() if str(v).strip())
                     logger.info(f"Task {task_id}: stage 2 produced {non_empty}/{len(ad_sentence_map)} non-empty AD sentences")
@@ -636,6 +638,7 @@ def upload_video():
                "openai_model": request.form.get("openai_model"),
                "video_type": request.form.get("video_type", "movie"),
                "custom_opening": (request.form.get("custom_opening") or "").strip() or None,
+               "lang": request.form.get("lang") or "en",
                "use_whisper": request.form.get("use_whisper") != "false",
                "use_context_extender": request.form.get("use_context_extender") == "true",
                "skip_stage2": request.form.get("skip_stage2") == "true",
@@ -867,6 +870,7 @@ def reprocess_route(job_id):
         "openai_model": data.get("openai_model"),
         "video_type": data.get("video_type", job.get("video_type", "movie")),
         "custom_opening": (data.get("custom_opening") or "").strip() or None,
+        "lang": data.get("lang") or "en",
         "use_context_extender": bool(data.get("use_context_extender",
                                                job.get("use_context_extender", False))),
         "skip_stage2": bool(data.get("skip_stage2", False)),

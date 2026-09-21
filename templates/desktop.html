@@ -463,6 +463,8 @@
                 custom_opening: document.getElementById('customPrompt').value.trim(),
                 range_mode: rangeMode(),
                 time_ranges: rangeText(),
+                // Prompt language follows the UI language (zh UI -> Chinese prompts).
+                lang: I18N.lang(),
             };
             
             // Show progress
@@ -825,7 +827,8 @@
                 openai_url: isOA ? d$('rpUrl').value.trim() : null,
                 openai_model: isOA ? d$('rpModel').value.trim() : null,
                 video_type: currentJob.job.video_type || 'movie',
-                use_context_extender: d$('rpContext').checked
+                use_context_extender: d$('rpContext').checked,
+                lang: I18N.lang()
             };
             let result;
             try {

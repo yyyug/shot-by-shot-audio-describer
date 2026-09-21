@@ -35,17 +35,22 @@ def build_film_grammar_prompt(
     threads: List[List[int]] = None,
     shot_scales: List[int] = None,
     prompt_variant: int = None,
-    custom_opening: str = None
+    custom_opening: str = None,
+    lang: str = None
 ) -> str:
     """
     Build prompt with film grammar information.
     Uses original repo's PromptLoader class.
+
+    ``lang`` ("zh") renders the prompt in Traditional Chinese; anything else
+    (including None) keeps the original English wording.
     """
     prompt_loader = PromptLoader(
         prompt_idx=prompt_variant or 0,
         video_type=video_type,
         label_type=label_type,
-        custom_opening=custom_opening
+        custom_opening=custom_opening,
+        lang=lang
     )
     
     prompt = prompt_loader.apply(

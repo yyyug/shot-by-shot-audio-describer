@@ -470,7 +470,7 @@ def _api_common():
 # reprocess ("重生執行")
 # ---------------------------------------------------------------------------
 
-def build_film_grammar(video_type, custom_opening, unit, shots):
+def build_film_grammar(video_type, custom_opening, unit, shots, lang=None):
     from processing.time_ranges import current_shot_indices
     return {
         "video_type": video_type,
@@ -481,11 +481,12 @@ def build_film_grammar(video_type, custom_opening, unit, shots):
         "shot_scales": [2] * len(shots),
         "prompt_variant": 4,
         "custom_opening": (custom_opening or "").strip() or None,
+        "lang": lang,
     }
 
 
 def describe_units(units, video_path, job_id, run, data_dir, backend, api_key,
-                   openai_url, openai_model, video_type, custom_opening,
+                   openai_url, openai_model, video_type, custom_opening, lang,
                    use_context_extender, shots, status, logger, extractors,
                    emit=None, progress_start=50):
     """Describe each unit, persisting results incrementally into
@@ -506,7 +507,7 @@ def describe_units(units, video_path, job_id, run, data_dir, backend, api_key,
                 else:
                     frames_b64 = extractors["base"](video_path, frame_shot)
                 save_unit_frames(job_id, unit["unit_id"], frames_b64, data_dir)
-            film_grammar = build_film_grammar(video_type, custom_opening, unit, shots)
+            film_grammar = build_film_grammar(video_type, custom_opening, unit, shots, lang)
             desc = describe_frames(frames_b64, api_key, backend=backend,
                                    film_grammar=film_grammar,
                                    openai_url=openai_url, openai_model=openai_model)
@@ -596,6 +597,7 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
             options.get("openai_url"), options.get("openai_model"),
             options.get("video_type", "movie"),
             options.get("custom_opening"),
+            options.get("lang"),
             bool(options.get("use_context_extender")), shots, status, logger,
             extractors, emit=emit, progress_start=50)
 
@@ -638,7 +640,8 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
                 stage1_for_stage2, api_key, backend=backend,
                 video_type=options.get("video_type", "movie"),
                 openai_url=options.get("openai_url"),
-                openai_model=options.get("openai_model"))
+                openai_model=options.get("openai_model"),
+                lang=options.get("lang"))
             ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
             save_stage2(job_id, new_run, data_dir, ad_sentence_map)
         elif api_key and not stage1_ready:

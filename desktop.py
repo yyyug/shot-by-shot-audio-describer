@@ -490,7 +490,8 @@ class AppBridge:
                             "threads": [[j for j in range(len(shots))]],
                             "shot_scales": [2] * len(shots),
                             "prompt_variant": 4,
-                            "custom_opening": (options.get("custom_opening") or "").strip() or None
+                            "custom_opening": (options.get("custom_opening") or "").strip() or None,
+                            "lang": options.get("lang")
                         }
 
                         desc = describe_frames(
@@ -580,7 +581,8 @@ class AppBridge:
                         stage1_results, api_key, backend=backend,
                         video_type=options.get("video_type", "movie"),
                         openai_url=options.get("openai_url"),
-                        openai_model=options.get("openai_model")
+                        openai_model=options.get("openai_model"),
+                        lang=options.get("lang")
                     )
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
                     non_empty = sum(1 for v in ad_sentence_map.values() if str(v).strip())
