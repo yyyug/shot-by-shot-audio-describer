@@ -49,11 +49,27 @@ VERB_LISTS_ZH = {
     "stage_performance": ['唱', '跳舞', '表演', '移動', '比劃', '走', '轉身', '看', '微笑', '揮手', '跳', '旋轉', '演奏', '握住', '抬起']
 }
 
-# Words per second (from original repo)
+# AD pacing used to size the narration budget: SECONDS PER UNIT, not units per
+# second. The limit is duration / pace, so 0.275 s/word means ~3.64 words per
+# second - the rate measured on the cmdad/tvad training data.
+#
+# NOTE: despite the historical name, this same table also picks the few-shot
+# examples (those are English sentences from those datasets), so it must stay on
+# the English rate even when the prompt language is Chinese.
 AD_SPEED = {
     "movie": 0.275,        # cmdad dataset
     "tv_series": 0.2695,   # tvad dataset
     "stage_performance": 0.2695  # use tvad speed
+}
+
+# Chinese narration pace for the same job: 0.2 s/character == 5 characters per
+# second. Chinese narration is paced per character, so the English word rate
+# would under-fill the window. Applies to the word limit only - the few-shot
+# examples stay English (see the note above).
+AD_SPEED_ZH = {
+    "movie": 0.2,
+    "tv_series": 0.2,
+    "stage_performance": 0.2,
 }
 
 # Floor applied to user-picked ranges ("describe only / in addition"): they can
@@ -81,10 +97,16 @@ def _load_training_data():
 _load_training_data()
 
 
-def estimate_word_limit(duration_seconds: float, video_type: str = "movie") -> int:
-    """Estimate word limit based on AD interval duration (from original repo formula)."""
-    speed = AD_SPEED.get(video_type, 0.275)
-    return max(1, round(duration_seconds / speed))
+def estimate_word_limit(duration_seconds: float, video_type: str = "movie", lang: str = None) -> int:
+    """How long an AD may be for a window of this duration.
+
+    Both pace tables are SECONDS PER UNIT, so the limit is duration / pace:
+    ~3.64 words/s in English, ~5 characters/s when lang is "zh" (a shorter
+    pace gives a longer budget). Anything other than "zh", including None,
+    keeps the original English budget.
+    """
+    pace = AD_SPEED_ZH if str(lang or "").lower().startswith("zh") else AD_SPEED
+    return max(1, round(duration_seconds / pace.get(video_type, pace["movie"])))
 
 
 def sample_few_shot_examples(video_type: str, duration_seconds: float, num_examples: int = 10) -> List[str]:
@@ -93,7 +115,9 @@ def sample_few_shot_examples(video_type: str, duration_seconds: float, num_examp
     if not examples:
         return []
     
-    # Calculate target word count
+    # Calculate target word count. Deliberately the English pace: the examples
+    # are English sentences from the cmdad/tvad datasets, so they have to be
+    # matched in words even when the prompt language is Chinese.
     speed = AD_SPEED.get(video_type, 0.275)
     target_words = round(duration_seconds / speed)
     
@@ -388,7 +412,7 @@ def summarize_to_ad(
     
     # Calculate word limit from duration if provided
     if duration_seconds is not None and word_limit is None:
-        word_limit = estimate_word_limit(duration_seconds, video_type)
+        word_limit = estimate_word_limit(duration_seconds, video_type, lang)
     elif word_limit is None:
         word_limit = 15
     
@@ -433,7 +457,7 @@ def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str 
         duration = item["end"] - item["start"]
         # A range the user picked can be arbitrarily short, and duration/speed
         # would then ask for a one- or two-word AD sentence, which is useless.
-        word_limit = estimate_word_limit(duration, video_type)
+        word_limit = estimate_word_limit(duration, video_type, lang)
         if item.get("mode") == "custom":
             word_limit = max(CUSTOM_MIN_WORD_LIMIT, word_limit)
         try:
