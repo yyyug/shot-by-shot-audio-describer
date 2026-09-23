@@ -3,10 +3,10 @@
 # PyInstaller spec for Shot-by-Shot: builds BOTH executables into one
 # one-folder bundle that shares a single _internal directory:
 #
-#   - ShotByShotDesktop.exe : pywebview window app (desktop.py)
-#   - ShotByShotWeb.exe     : local Flask server + auto browser open
-#                             (webapp_entry.py, console kept visible so the
-#                              user can stop the server by closing it)
+#   - BuddyAD.exe      : pywebview window app (desktop.py)
+#   - BuddyADWeb.exe   : local Flask server + auto browser open
+#                        (webapp_entry.py, console kept visible so the
+#                         user can stop the server by closing it)
 #
 # Optional env vars:
 #   SBS_ENTRY      path to a PyArmor-obfuscated desktop.py (protected build)
@@ -163,6 +163,23 @@ EXCLUDES = [
     "PyQt6",
     "PySide2",
     "PySide6",
+    # pywebview ships a backend per platform; the frozen app only ever runs the
+    # EdgeChromium (WebView2) backend on Windows, so keep the others out of the
+    # bundle (also silences the harmless "webview.platforms.edgtw not found"
+    # hidden-import error caused by the obsoleted module name).
+    "webview.platforms.cef",
+    "webview.platforms.gtk",
+    "webview.platforms.qt",
+    "webview.platforms.mshtml",
+    "webview.platforms.cocoa",
+    "webview.platforms.android",
+    "webview.platforms.edgtw",
+    "webview.platforms.winforms.mock",
+    # Research-only / optional across the dependency tree; nothing imports
+    # these at runtime and dropping them keeps the shared PYZ leaner.
+    "sympy",
+    "pygments",
+    "pytest",
     # The packaged app runs ONNX-only, and processing/film_grammar.py no longer
     # imports torch at module scope (the DINOv2 shot-scale / thread helpers are
     # lazily loaded and never called by the pipeline - shot scales come from the
@@ -267,7 +284,7 @@ exe_desktop = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="ShotByShotDesktop",
+    name="BuddyAD",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -286,7 +303,7 @@ exe_web = EXE(
     b.scripts,
     [],
     exclude_binaries=True,
-    name="ShotByShotWeb",
+    name="BuddyADWeb",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -308,5 +325,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="ShotByShotPortable",
+    name="BuddyADPortable",
 )

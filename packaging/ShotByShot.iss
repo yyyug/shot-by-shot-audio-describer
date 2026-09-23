@@ -5,21 +5,21 @@
 ; Build: iscc packaging\ShotByShot.iss
 ; (or run build.ps1 which drives PyInstaller then ISCC automatically)
 
-#define MyAppName "Shot-by-Shot"
+#define MyAppName "Buddy AD"
 #define MyAppVersion "1.0.0"
-#define MyAppExeName "ShotByShotDesktop.exe"
+#define MyAppExeName "BuddyAD.exe"
 
 [Setup]
 AppId={{D0E6A4D2-9B45-4C6E-9A37-2F1B6A3C8D4E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppPublisher=Shot-by-Shot
-DefaultDirName={autopf}\Shot-by-Shot
+AppPublisher=Buddy AD
+DefaultDirName={autopf}\BuddyAD
 DisableDirPage=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=ShotByShot-Setup
+OutputBaseFilename=BuddyAD-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -35,19 +35,19 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "..\dist\ShotByShotPortable\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\BuddyADPortable\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Evergreen WebView2 Runtime bootstrapper (~2MB, needs network when run).
 ; Only executed on machines where the runtime is missing (fresh Win10 etc.).
 Source: "redist\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Dirs]
 ; Pre-create the data folder so the "Outputs" shortcut works even before first run.
-Name: "{localappdata}\ShotByShot"
+Name: "{localappdata}\BuddyAd"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{group}\{#MyAppName} (Web)"; Filename: "{app}\ShotByShotWeb.exe"; WorkingDir: "{app}"; Comment: "Run in the browser (local web server)"
-Name: "{group}\{#MyAppName} Outputs"; Filename: "{localappdata}\ShotByShot"; Comment: "Open output CSVs and log folder"
+Name: "{group}\{#MyAppName} (Web)"; Filename: "{app}\BuddyADWeb.exe"; WorkingDir: "{app}"; Comment: "Run in the browser (local web server)"
+Name: "{group}\{#MyAppName} Outputs"; Filename: "{localappdata}\BuddyAd"; Comment: "Open output CSVs and log folder"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 

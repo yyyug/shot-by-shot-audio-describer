@@ -168,26 +168,22 @@ def _opt_float(raw):
         return None
 
 
+# Set when the page fires pywebview's "loaded" event (DOMContentLoaded +
+# bridge handed over). The native HWND existing is NOT enough: a corrupt or
+# locked WebView2 user-data folder still yields a window, but the control
+# inside never renders and every launch looks like a freeze.
+_UI_LOADED = threading.Event()
+
+
 def _start_window_watchdog(timeout=60):
-    """Poll for the main window; if it never appears, dump WebView2
-    subprocess state to the log so a silent native failure can be
-    diagnosed remotely (0 processes = broken runtime; >0 = GPU/render)."""
+    """Phase 1: wait for the main window HWND. Phase 2: wait for the page's
+    DOM to actually load (pywebview 'loaded' event). If either never happens,
+    dump WebView2 subprocess state to the log so a silent native failure can
+    be diagnosed remotely (0 processes = broken runtime; >0 = GPU/render)."""
     stop = threading.Event()
 
-    def watch():
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if stop.wait(2):
-                return
-            try:
-                import ctypes
-                hwnd = ctypes.windll.user32.FindWindowW(None, _WINDOW_TITLE)
-                if hwnd:
-                    logger.info(f"Window handle found (hwnd=0x{hwnd:X})")
-                    return
-            except Exception:
-                pass
-        logger.warning(f"No window after {timeout}s - dumping WebView2 process state")
+    def dump_webview2_state(why):
+        logger.warning(why)
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq msedgewebview2.exe", "/FO", "CSV"],
@@ -198,6 +194,35 @@ def _start_window_watchdog(timeout=60):
             logger.warning(f"tasklist output:\n{out.stdout.strip()}")
         except Exception as e:
             logger.error(f"tasklist failed: {e}")
+
+    def watch():
+        deadline = time.time() + timeout
+        hwnd = 0
+        while time.time() < deadline:
+            if stop.wait(1):
+                return
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.FindWindowW(None, _WINDOW_TITLE)
+                if hwnd:
+                    logger.info(f"Window handle found (hwnd=0x{hwnd:X})")
+                    break
+            except Exception:
+                pass
+        if not hwnd:
+            dump_webview2_state(f"No window after {timeout}s - WebView2 never created the window")
+            return
+        # Phase 2: wait for the DOM-loaded event on the same budget.
+        while time.time() < deadline:
+            if stop.wait(1):
+                return
+            if _UI_LOADED.is_set():
+                logger.info("UI DOM loaded (JS bridge ready)")
+                return
+        dump_webview2_state(
+            f"Native window appeared (0x{hwnd:X}) but DOM never loaded - "
+            "WebView2 control init is hanging/failed"
+        )
 
     t = threading.Thread(target=watch, daemon=True)
     t.start()
@@ -242,6 +267,7 @@ class AppBridge:
         self.window = None
         self.processing_status = {}
         self._active_task_id = None
+        self._last_emit_at = 0.0
     
     def attach_window(self, window):
         self.window = window
@@ -251,7 +277,16 @@ class AppBridge:
         return "pong"
     
     def emit_progress(self, task_id, status):
-        """Send progress update to frontend."""
+        """Send progress update to frontend. Coalesced to at most one push per
+        100ms: bursty progress streams otherwise flush hundreds of
+        webview.evaluate_js -> Control.Invoke calls through pywebview, which can
+        trip WinForms' internal Invoke-counter overflow (intermittent 'sudden
+        close' crash)."""
+        import time
+        now = time.monotonic()
+        if now - self._last_emit_at < 0.1:
+            return
+        self._last_emit_at = now
         if self.window:
             try:
                 self.window.evaluate_js(
@@ -1026,9 +1061,29 @@ def main():
     
     bridge.attach_window(window)
 
+    # Diagnostic window events: "shown" proves WinForms created the native
+    # window, "loaded" proves the WebView2 control actually rendered and the
+    # JS bridge is up. The watchdog above keys its second phase off loaded.
+    def _on_shown():
+        logger.info("Native window shown event fired")
+    def _on_loaded():
+        _UI_LOADED.set()
+        logger.info("DOM loaded event fired (page rendering + JS bridge up)")
+    def _on_closed():
+        logger.info("Window closed event fired")
+    try:
+        window.events.shown += _on_shown
+        window.events.loaded += _on_loaded
+        window.events.closed += _on_closed
+    except Exception as e:
+        logger.warning(f"Could not attach pywebview window events: {e}")
+
     # Deterministic WebView2 user-data folder: pre-created, writable, and
     # survives across runs so first-run profile provisioning only happens once.
-    webview_storage = os.path.join(DATA_DIR, "WebView2")
+    # The "-v2" suffix gives this build a FRESH profile. A corrupt/locked
+    # profile from older builds (Nuitka era or hung sessions) makes the control
+    # hang before rendering - deleting the whole WebView2-v2 folder resets it.
+    webview_storage = os.path.join(DATA_DIR, "WebView2-v2")
     os.makedirs(webview_storage, exist_ok=True)
 
     # Optional per-machine workaround: set SBS_BROWSER_ARGS=--disable-gpu

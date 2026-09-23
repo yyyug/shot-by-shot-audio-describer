@@ -12,6 +12,10 @@ funasr-onnx>=0.4.3
 onnxruntime>=1.17
 google-genai
 num2words
+# numba (via librosa) references tbb12.dll for its TBB threading pool; the
+# tbb wheel ships the DLL so the PyInstaller warning at build time goes away
+# and the optional pool actually works when numba is exercised.
+tbb>=2021.0.0
 # NOTE: PyTorch is NOT listed here on purpose.
 # For CPU-only builds install requirements-cpu.txt FIRST (torch + torchaudio),
 # otherwise pip resolves the ~2.3GB CUDA wheels from PyPI.

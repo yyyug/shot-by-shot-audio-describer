@@ -2,7 +2,7 @@
 # 1. Creates a fresh build venv (isolated, does not pollute system Python)
 # 2. Installs CPU-only PyTorch + dependencies + PyInstaller (+ PyArmor)
 # 3. (Optional) Obfuscates your source with PyArmor
-# 4. Builds a one-folder app (dist\ShotByShotPortable)
+# 4. Builds a one-folder app (dist\BuddyADPortable)
 #    including bundled SenseVoice models
 # 5. If Inno Setup is installed, compiles a single-file UI installer
 #    (dist\ShotByShot-Setup.exe) with shortcuts + uninstaller.
@@ -29,7 +29,7 @@ $BuildVenv = Join-Path $Root ".build-venv"
 $Ico = Join-Path $Root "packaging\shot.ico"
 $DistPath = if ([System.IO.Path]::IsPathRooted($DistDir)) { $DistDir } else { Join-Path $Root $DistDir }
 $WorkPath = if ([System.IO.Path]::IsPathRooted($WorkDir)) { $WorkDir } else { Join-Path $Root $WorkDir }
-$PortableDir = Join-Path $DistPath "ShotByShotPortable"
+$PortableDir = Join-Path $DistPath "BuddyADPortable"
 
 function Write-Step([string]$Msg) { Write-Host "`n==> $Msg" -ForegroundColor Cyan }
 function Write-Ok([string]$Msg) { Write-Host "    $Msg" -ForegroundColor Green }
@@ -163,7 +163,7 @@ Copy-Item $batSrc $PortableDir -Force
 Write-Ok "Added 'Shot-by-Shot Outputs.bat' next to the exe."
 
 # ---------------------------------------------------------------- inno setup
-# The installer .iss hardcodes dist\ShotByShotPortable, so it only makes sense
+# The installer .iss hardcodes dist\BuddyADPortable, so it only makes sense
 # for the default output folder; a custom -DistDir is a portable-only build.
 if ($SkipInno) { Write-Ok "Skipping Inno Setup (as requested)."; exit 0 }
 if ($DistPath -ne (Join-Path $Root "dist")) {
@@ -184,11 +184,11 @@ if ($iscc) {
     Write-Step "Building single-file installer with Inno Setup..."
     & $iscc (Join-Path $Root "packaging\ShotByShot.iss")
     if ($LASTEXITCODE -ne 0) { Write-Warn "Inno Setup compile failed."; exit 1 }
-    Write-Ok "Installer: $(Join-Path $Root 'dist\ShotByShot-Setup.exe')"
+    Write-Ok "Installer: $(Join-Path $Root 'dist\BuddyAD-Setup.exe')"
 } else {
     Write-Warn "Inno Setup not found - skipping installer step."
     Write-Warn "Download free Inno Setup 6 from https://jrsoftware.org/isinfo.php then re-run build.ps1"
-    Write-Warn "The one-folder build in dist\ShotByShotPortable can be zipped and distributed as-is."
+    Write-Warn "The one-folder build in dist\BuddyADPortable can be zipped and distributed as-is."
 }
 
 Write-Step "Done."

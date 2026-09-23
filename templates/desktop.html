@@ -29,7 +29,7 @@
         .test-result { display: block; margin-top: 6px; font-size: 13px; word-break: break-word; }
         .test-result.ok { color: #28a745; }
         .test-result.err { color: #dc3545; }
-        .hidden { display: none; }
+        .hidden { display: none !important; }
         .progress { margin-top: 20px; padding: 15px; background: #f0f7ff; border-radius: 8px; }
         .progress h3 { margin-bottom: 10px; color: #333; }
         .progress p { color: #666; margin: 5px 0; }
@@ -967,9 +967,14 @@
             // Heartbeat: a logged pong below proves the page executed, i18n
             // applied and the JS<->Python bridge is alive. Missing it means the
             // window opened but the UI failed before reaching user interaction.
-            if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.ping === 'function') {
-                window.pywebview.api.ping();
-            }
+            // Deferred ~1s: pinging during pywebview's own post-navigation
+            // bridge injection adds re-entrant evaluate_js -> Control.Invoke
+            // traffic at the exact moment the OverflowException was observed.
+            setTimeout(() => {
+                if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.ping === 'function') {
+                    window.pywebview.api.ping();
+                }
+            }, 1000);
         });
     </script>
 </body>

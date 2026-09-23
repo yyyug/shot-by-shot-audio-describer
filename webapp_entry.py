@@ -1,6 +1,6 @@
 """
 Web UI entry point - starts the local Flask server and opens the browser.
-Packaged as ShotByShotWeb.exe alongside ShotByShotDesktop.exe.
+Packaged as BuddyADWeb.exe alongside BuddyAD.exe.
 """
 import os
 import sys

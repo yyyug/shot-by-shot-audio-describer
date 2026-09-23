@@ -1,4 +1,4 @@
-# Shot-by-Shot: 影片逐鏡頭分析工具 / Video Shot-by-Shot Audio Describer
+# Buddy AD：逐鏡頭口述影像生成工具 / Shot-by-Shot Audio Description Assistant
 
 [English](#english) | [中文](#中文)
 
@@ -6,15 +6,39 @@
 
 ## English
 
-### Overview
+### What it does
 
-This tool processes video files to generate shot-by-shot analysis with:
-- Shot boundary detection (PySceneDetect)
-- Audio transcription + dialogue gap detection (SenseVoice / FunASR)
-- **Character bank** — face detection & clustering across shots
-- **Context extension** — past/future shot context for AD placement
-- AI-powered video descriptions — **Multi-backend**: Gemini, Qwen (DashScope), DeepSeek, or any OpenAI-compatible endpoint
-- Audio description summarization (Stage 2 LLM)
+**Buddy AD（口述影像助理）** turns any video into a shot-by-shot **audio
+description (口述影像) script**. It finds every camera cut, transcribes the
+dialogue, locates the silent gaps between lines of speech, and uses a
+**vision-language model (VLM)** to describe what is on screen, then an LLM
+summarizes those descriptions into natural narration sentences timed to the
+pauses — ready for accessibility use by a sight-impaired audience or for
+post-production.
+
+### Features
+
+- **Shot-boundary detection** (PySceneDetect) — every shot is one unit
+- **Dialogue-gap AD placement** — SenseVoice/FunASR transcription finds the
+  pauses between speech and schedules narration into them
+- **Custom narration length** — set a target speaking rate (chars per second)
+  per video, used to size every narration sentence
+- **Multi-backend VLM + LLM** — Gemini, Qwen (DashScope), DeepSeek, or any
+  OpenAI-compatible endpoint, with **editable model names** and an in-app
+  model picker
+- **Character bank** — face detection & clustering across shots for consistent
+  character naming
+- **Context extension** — neighbouring-shot context feeds each AD interval
+- **Timed selection** — "describe only" a user-picked time range, or "in
+  addition to" the auto-detected gaps
+- **Custom prompts** — choose a prompt variant and thinking level, or write
+  your own
+- **Resilient API calls** — per-provider retry + delay backoff, token-usage
+  tracking, stuck-request timeouts
+- **History & replay** — every run is saved; CSV/VTT/outputs can be regenerated
+  later even **without the original video**
+- **Bilingual, screen-reader friendly UI** — Traditional Chinese / English,
+  accessible controls, DESCRIBE buttons, and more
 
 ### Prerequisites
 
@@ -46,8 +70,8 @@ Steps:
 ```text
 1. Copy the whole folder (including models/) to the target machine.
 2. Double-click setup.bat (requires Python 3.8+ already installed).
-3. Start Menu > "Shot-by-Shot (Web)" to use it.
-4. Start Menu > "Shot-by-Shot (Uninstall)" to remove it.
+3. Start Menu > "Buddy AD (Web)" to use it.
+4. Start Menu > "Uninstall Buddy AD" to remove it.
 ```
 
 The virtual environment lives in `.venv/` and SenseVoice models in
@@ -60,10 +84,12 @@ End users who do not have Python can get a self-contained Windows desktop app.
 
 1. **Pre-download the models** (already done in this repo — `models/sensevoice/`).
 2. Run `build.ps1` (PowerShell):
-   - Builds the **desktop app** with **PyInstaller** into `dist/ShotByShotDesktop/`
-     (includes templates, static files, and the ~1GB SenseVoice models).
+   - Builds with **PyInstaller** into `dist-pyinstaller/BuddyADPortable/`:
+     - `BuddyAD.exe` — the **desktop app** (pywebview/WinForms)
+     - `BuddyADWeb.exe` — the plain **web server** (headless)
+     - bundles templates, static files, and the ~235MB quantized SenseVoice models
    - If **Inno Setup 6** (free, https://jrsoftware.org/isinfo.php) is installed,
-     also compiles `dist/ShotByShot-Setup.exe` — a single-file **UI installer**
+     also compiles `dist/BuddyAD-Setup.exe` — a single-file **UI installer**
      with shortcuts and an uninstall entry in Windows "Apps & Features".
 
 ```text
@@ -73,17 +99,20 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 ```
 
 Notes:
-- The bundle is large (~1.5–2GB) because the int8-quantized SenseVoice model
-  (~235MB, `model_quant.onnx`) is bundled for offline use — this is the trade-off
-  for a single offline installer with no download on first run.
+- The bundle is ~1 GB because the int8-quantized SenseVoice model and the
+  ASR/ML stack (funasr-onnx, librosa/numba, opencv, scipy) are bundled for
+  offline use — this is the trade-off for a single offline portable with no
+  download on first run.
 - The packaged desktop app stores outputs and the log in
-  `%LOCALAPPDATA%\ShotByShot\` (writable even under Program Files).
+  `%LOCALAPPDATA%\BuddyAd\` (writable even under Program Files; delete the
+  `WebView2-v2` subfolder to reset a corrupted webview profile).
 - Only `models/sensevoice/` is bundled. Older unrelated files in `models/`
   (`whisper/`, `shot_scale_ckpt.pth`) are **not** used by the current pipeline
   (shot detection is PySceneDetect, not a model file) and are excluded.
 - If PyInstaller misses any dynamic imports (funasr/modelscope), add them to
   `hiddenimports` in `packaging/ShotByShotDesktop.spec` and rebuild.
-- `dist/ShotByShotDesktop/` can also be zipped and distributed as a portable app.
+- `dist-pyinstaller/BuddyADPortable/` can also be zipped and distributed as a
+  portable app.
 
 ### Build environment packages (`.build-venv`)
 
@@ -92,10 +121,10 @@ Notes:
 
 | Source | Packages (versions from current build) |
 |--------|------------------------------------------|
-| `requirements-cpu.txt` | torch 2.13.0+cpu, torchaudio 2.11.0+cpu, torchvision 0.28.0+cpu (PyTorch CPU index) |
-| `requirements.txt` | flask 3.1.3, flask-cors 6.0.5, scenedetect 0.7.1, pandas 3.0.5, numpy 2.4.6, requests 2.34.2, werkzeug 3.1.8, opencv-python 4.14.0 (**pinned `<5`**), scikit-learn 1.9.0, funasr 1.4.2, google-genai 2.19.0, num2words 0.5.14 |
+| `requirements-cpu.txt` | torch 2.x+cpu (dev/tests only, **never bundled**) |
+| `requirements.txt` | flask 3.1.3, flask-cors 6.0.5, scenedetect 0.7.1, pandas 3.0.5, numpy 1.26.4, requests 2.34.2, werkzeug 3.1.8, opencv-python 4.11.0 (**pinned `<5`**), scikit-learn 1.9.0, funasr 1.4.12, funasr-onnx 0.4.3, google-genai 2.22.0, num2words 0.5.14, tbb 2023.1.0 |
 | `requirements-desktop.txt` | pywebview 6.2.1 |
-| build tools | pyinstaller 6.22.1, pyarmor 9.2.6 (trial — buy a license for commercial distribution), pytest 9.1.1 |
+| build tools | pyinstaller 6.22.2, pyarmor 9.2.7 (trial — buy a license for commercial distribution), pytest 9.1.1 |
 
 Hard-won pins / gotchas:
 - **opencv-python must stay `<5`**: OpenCV 5 removed `CascadeClassifier`
@@ -119,7 +148,7 @@ Hard-won pins / gotchas:
 
 ### Troubleshooting the packaged desktop app
 
-- **Log file**: `%LOCALAPPDATA%\ShotByShot\shot_by_shot.log`. All uncaught
+- **Log file**: `%LOCALAPPDATA%\BuddyAd\shot_by_shot.log`. All uncaught
   Python exceptions are written here (excepthook). If a crash produces **no**
   log entry, it died at native level (WebView2/COM), not in Python code.
 - **First launch on a new machine** may be slow or crash once: Windows Defender
@@ -237,15 +266,32 @@ app.py  ──  Flask web server
 
 ## 中文
 
-### 概述
+### 用途
 
-此工具用於處理影片檔案，生成逐鏡頭分析，包括：
-- 鏡頭邊界檢測（PySceneDetect）
-- 音訊轉錄及對話空隙偵測（SenseVoice / FunASR）
-- **角色庫** — 全鏡頭人臉檢測與聚類
-- **上下文擴展** — 前後鏡頭上下文用於口述影像配置
-- AI 影片描述 — **多後端**：Gemini、Qwen（DashScope）、DeepSeek，或任何 OpenAI-compatible 端點
-- 口述影像摘要（Stage 2 LLM）
+**Buddy AD（口述影像助理）** 能把任何影片變成逐鏡頭的**口述影像文字稿**。
+程式會自動找出每個鏡頭剪接點、轉錄對白、偵測對白之間的空隙，再用
+**視覺語言模型（VLM）**描述畫面內容，最後由 LLM 把描述濃縮成
+配合說話空隙時間的口述旁白句子 — 供視障人士觀影或後期製作使用。
+
+### 功能
+
+- **鏡頭邊界偵測**（PySceneDetect）— 每個鏡頭即一個單元
+- **對話空隙口述影像編排** — SenseVoice/FunASR 轉錄找出對白停頓處，
+  把旁白排進空隙
+- **自訂口述影像長度** — 為每條影片設定目標語速（每秒字數），
+  依此計算每句旁白的長度
+- **多後端 VLM + LLM** — Gemini、Qwen（DashScope）、DeepSeek 或任何
+  OpenAI-compatible 端點；模型名稱**可自行編輯**，內建模型清單選擇器
+- **角色庫** — 跨鏡頭人臉偵測與聚類，角色命名一致
+- **上下文擴展** — 把前後鏡頭的背景訊息餵給每個口述影像區間
+- **時間範圍選擇** — 可「只描述」使用者指定的時間範圍，或「在自動偵測
+  空隙之外」再加上指定範圍
+- **自訂提示詞** — 可選提示詞變體與思考級別，亦可自己撰寫
+- **穩健 API 呼叫** — 每個 Provider 獨立重試與退避延遲、token 用量統計、
+  卡住請求逾時
+- **歷史與重播** — 每次執行都會儲存；即使**沒有原始影片**，日後仍可
+  重新生成 CSV/VTT 等輸出
+- **雙語、友善讀屏介面** — 繁體中文 / 英文，可訪問控制項、DESCRIBE 按鈕等
 
 ### 系統要求
 
@@ -275,8 +321,8 @@ app.py  ──  Flask web server
 ```text
 1. 將整個資料夾（含 models/）複製到目標電腦。
 2. 雙擊 setup.bat（需已安裝 Python 3.8+）。
-3. 開始功能表 >「Shot-by-Shot (Web)」即可使用。
-4. 開始功能表 >「Shot-by-Shot (Uninstall)」即可解除安裝。
+3. 開始功能表 >「Buddy AD (Web)」即可使用。
+4. 開始功能表 >「Uninstall Buddy AD」即可解除安裝。
 ```
 
 虛擬環境位於 `.venv/`、SenseVoice 模型位於 `models/sensevoice/`。
@@ -288,10 +334,11 @@ app.py  ──  Flask web server
 
 1. **預先下載模型**（本 repo 已含 — `models/sensevoice/`）。
 2. 執行 `build.ps1`（PowerShell）：
-   - 用 **PyInstaller** 打包桌面版到 `dist/ShotByShotDesktop/`（內含 templates、static、
-     約 1GB 的 SenseVoice 模型）。
+   - 用 **PyInstaller** 打包到 `dist-pyinstaller/BuddyADPortable/`：
+     `BuddyAD.exe`（桌面版，pywebview/WinForms）＋ `BuddyADWeb.exe`（純網頁伺服器，無視窗），
+     內含 templates、static 與~235MB 量化版 SenseVoice 模型。
    - 若已安裝 **Inno Setup 6**（免費，https://jrsoftware.org/isinfo.php），
-     會一併編譯出 `dist/ShotByShot-Setup.exe` — 單一檔案的 **UI 安裝程式**，
+     會一併編譯出 `dist/BuddyAD-Setup.exe` — 單一檔案的 **UI 安裝程式**，
      含捷徑與 Windows「應用程式與功能」中的解除安裝項目。
 
 ```text
@@ -301,13 +348,15 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 ```
 
 注意事項：
-- 安裝檔約 1.5–2GB，因為 int8 量化版 SenseVoice 模型（約 235MB，`model_quant.onnx`）隨附在內，以便離線使用。
-- 打包版桌面應用程式的輸出與 log 放在 `%LOCALAPPDATA%\ShotByShot\`（Program Files 下也可寫入）。
+- 打包約 1GB（不帶 PyTorch），int8 量化版 SenseVoice 模型與 ASR/ML 依賴
+  （funasr-onnx、librosa/numba、opencv、scipy）都隨附在內，以便離線使用。
+- 打包版桌面應用程式的輸出與 log 放在 `%LOCALAPPDATA%\BuddyAd\`（Program Files 下也可寫入；
+  若 webview 內容異常，可刪除 `WebView2-v2` 子資料夾重設）。
 - 只打包 `models/sensevoice/`。`models/` 下其他舊檔案（`whisper/`、`shot_scale_ckpt.pth`）
   **目前管線未使用**（鏡頭偵測用 PySceneDetect，不需模型檔），故排除。
 - 若 PyInstaller 漏掉 funasr/modelscope 的動態 import，請在 `packaging/ShotByShotDesktop.spec` 的
   `hiddenimports` 補上後重新打包。
-- `dist/ShotByShotDesktop/` 也可直接壓縮成 zip 當作可攜版分發。
+- `dist-pyinstaller/BuddyADPortable/` 也可直接壓縮成 zip 當作可攜版分發。
 
 ### 建置環境套件（`.build-venv`）
 
@@ -341,7 +390,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 
 ### 打包版桌面應用疑難排解
 
-- **Log 位置**：`%LOCALAPPDATA%\ShotByShot\shot_by_shot.log`。所有未捕捉的
+- **Log 位置**：`%LOCALAPPDATA%\BuddyAd\shot_by_shot.log`。所有未捕捉的
   Python 例外都會寫進這裡（excepthook）。若崩潰時 log **沒有**新內容，
   代表是原生層級崩潰（WebView2/COM），不是 Python 程式碼問題。
 - **新機器第一次啟動**可能較慢或崩潰一次：Windows Defender 要掃描整包檔案，
