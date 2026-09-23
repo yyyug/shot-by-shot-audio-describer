@@ -114,12 +114,58 @@ def _warn_no_webview2():
     logger.critical("WebView2 Runtime not found; aborting startup")
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, msg, "Shot-by-Shot", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, msg, "Buddy AD", 0x10)
     except Exception:
         print(msg)
 
 
-_WINDOW_TITLE = "Shot-by-Shot Audio Describer"
+_WINDOW_TITLE = "Buddy AD"
+
+_SINGLE_INSTANCE_NAME = "BuddyAd.ShotByShot.Desktop.SingleInstance"
+
+
+def _acquire_single_instance():
+    """Create a named mutex so a second launch cannot fight the first for the
+    WebView2 user-data folder (a hung first instance makes a second one block
+    forever inside webview.start with no window ever appearing). Returns the
+    mutex handle to keep alive, False if another instance is already running,
+    or None when the OS can't provide a mutex (non-Windows / failure)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        handle = k32.CreateMutexW(None, False, _SINGLE_INSTANCE_NAME)
+        if not handle:
+            return None
+        ERROR_ALREADY_EXISTS = 183
+        if k32.GetLastError() == ERROR_ALREADY_EXISTS:
+            k32.CloseHandle(handle)
+            # Bring the running instance's window to the foreground, if any.
+            try:
+                hwnd = ctypes.windll.user32.FindWindowW(None, _WINDOW_TITLE)
+                if hwnd:
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+            return False
+        return handle
+    except Exception as e:
+        logger.warning(f"Single-instance guard unavailable: {e}")
+        return None
+
+
+def _opt_float(raw):
+    """Parse a float from a JS option; falsy/empty/bad -> None."""
+    if raw is None or raw == "":
+        return None
+    try:
+        val = float(raw)
+        return val if val > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _start_window_watchdog(timeout=60):
@@ -199,6 +245,10 @@ class AppBridge:
     
     def attach_window(self, window):
         self.window = window
+    
+    def ping(self):
+        logger.info("UI ready (JS bridge ping OK)")
+        return "pong"
     
     def emit_progress(self, task_id, status):
         """Send progress update to frontend."""
@@ -602,7 +652,8 @@ class AppBridge:
                         openai_url=options.get("openai_url"),
                         openai_model=options.get("openai_model"),
                         model=options.get("model"),
-                        lang=options.get("lang")
+                        lang=options.get("lang"),
+                        ad_chars_per_sec=_opt_float(options.get("ad_chars_per_sec"))
                     )
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
                     non_empty = sum(1 for v in ad_sentence_map.values() if str(v).strip())
@@ -933,6 +984,11 @@ def main():
         _warn_no_webview2()
         sys.exit(1)
 
+    single_instance = _acquire_single_instance()
+    if single_instance is False:
+        logger.warning("Another instance is already running; exiting without opening a second window")
+        return
+
     bridge = AppBridge()
     
     # Get the frontend HTML path
@@ -959,7 +1015,7 @@ def main():
     
     # Create window with HTML content
     window = webview.create_window(
-        title="Shot-by-Shot Audio Describer",
+        title=_WINDOW_TITLE,
         html=html_content,
         js_api=bridge,
         width=1200,

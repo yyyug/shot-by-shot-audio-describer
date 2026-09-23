@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="appTitle">BuddyAD</title>
+    <title data-i18n="appTitle">Buddy AD</title>
     <link rel="stylesheet" href="/static/style.css">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -88,7 +88,7 @@
         <div style="text-align:right; margin-bottom:10px;">
             <button type="button" id="langToggle" style="width:auto; padding:6px 14px; margin:0; font-size:13px;"></button>
         </div>
-        <h1 data-i18n="appTitle">BuddyAD</h1>
+        <h1 data-i18n="appTitle">Buddy AD</h1>
 
         <div class="tabs">
             <button type="button" id="tabTaskBtn" class="tab active" data-i18n="tabTask">New Task</button>
@@ -183,6 +183,15 @@
                     </p>
                     <p id="rangeError" style="color:#c00; font-size:12px; margin-top:4px; display:none;"></p>
                 </div>
+            </div>
+
+            <div class="form-group checkbox">
+                <input type="checkbox" id="adLenCustom" name="adLenCustom">
+                <label for="adLenCustom" data-i18n="customAdLen">Custom narration length (chars/sec)</label>
+            </div>
+            <div class="form-group hidden" id="adLenCustomGroup">
+                <label for="adCharsPerSec" data-i18n="adCharsPerSec">Characters spoken per second (e.g. 5):</label>
+                <input type="number" id="adCharsPerSec" name="adCharsPerSec" value="5" min="1" max="40" step="0.5">
             </div>
 
             <div class="form-group checkbox">
@@ -420,6 +429,12 @@
         });
         rangeBox().addEventListener('blur', () => normaliseRanges(true));
 
+        const adLenCustom = document.getElementById('adLenCustom');
+        const adLenCustomGroup = document.getElementById('adLenCustomGroup');
+        const syncAdLen = () => { adLenCustomGroup.classList.toggle('hidden', !adLenCustom.checked); };
+        adLenCustom.addEventListener('change', syncAdLen);
+        syncAdLen();
+
         // API key test: send a tiny prompt and report the outcome
         async function runApiTest(resultEl) {
             const b = document.getElementById('backend').value;
@@ -498,6 +513,9 @@
             formData.append('use_whisper', document.getElementById('useWhisper').checked);
             formData.append('use_context_extender', document.getElementById('useContextExtender').checked);
             formData.append('save_to_history', document.getElementById('saveToHistory').checked);
+            formData.append('ad_chars_per_sec', document.getElementById('adLenCustom').checked
+                ? document.getElementById('adCharsPerSec').value.trim()
+                : '');
             formData.append('video_type', document.getElementById('videoType').value);
             formData.append('custom_opening', document.getElementById('customPrompt').value.trim());
             formData.append('range_mode', rangeMode());

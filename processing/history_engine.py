@@ -643,7 +643,8 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
                 openai_url=options.get("openai_url"),
                 openai_model=options.get("openai_model"),
                 model=options.get("model"),
-                lang=options.get("lang"))
+                lang=options.get("lang"),
+                ad_chars_per_sec=options.get("ad_chars_per_sec"))
             ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
             save_stage2(job_id, new_run, data_dir, ad_sentence_map)
         elif api_key and not stage1_ready:

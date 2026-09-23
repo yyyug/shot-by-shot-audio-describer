@@ -3,7 +3,7 @@
 
     var TRANSLATIONS = {
         en: {
-            appTitle: "BuddyAD",
+            appTitle: "Buddy AD",
             videoFile: "Video File",
             selectFile: "Select File",
             llm: "LLM",
@@ -19,6 +19,8 @@
             enableGap: "Enable dialogue gap detection",
             useContext: "Using multi-shot context to improve AD continuity",
             saveToHistory: "Save output data to history",
+            customAdLen: "Custom narration length (chars/sec)",
+            adCharsPerSec: "Characters spoken per second (e.g. 5):",
             videoType: "Video Type",
             optMovie: "Movie",
             optTv: "TV Series",
@@ -124,6 +126,8 @@
             enableGap: "啟用對話間隙偵測",
             useContext: "利用多鏡頭上下文來改善 AD 的連續性",
             saveToHistory: "儲存輸出資料到歷史",
+            customAdLen: "自訂口述影像長度（每秒字數）",
+            adCharsPerSec: "每秒口述字數（例如 5）：",
             videoType: "影片類型",
             optMovie: "電影",
             optTv: "影集",

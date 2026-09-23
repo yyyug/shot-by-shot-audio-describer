@@ -121,6 +121,17 @@ def _release_task(task_id: str):
             _active_task_id = None
 
 
+def _opt_float(raw):
+    """Parse a float from a form/JSON value; None/empty/bad -> None."""
+    if raw is None or raw == "":
+        return None
+    try:
+        val = float(raw)
+        return val if val > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def build_character_bank(video_path, shots, num_frames=16, threshold=0.6):
     """Detect faces across shots, cluster into characters."""
     all_embeddings = []
@@ -519,7 +530,8 @@ def process_video_task(task_id, video_path, options):
                                                 openai_model=options.get("openai_model"),
                                                 model=options.get("model"),
                                                 usage_acc=stage2_usage,
-                                                lang=options.get("lang"))
+                                                lang=options.get("lang"),
+                                                ad_chars_per_sec=options.get("ad_chars_per_sec"))
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
                     non_empty = sum(1 for v in ad_sentence_map.values() if str(v).strip())
                     logger.info(f"Task {task_id}: stage 2 produced {non_empty}/{len(ad_sentence_map)} non-empty AD sentences")
@@ -666,6 +678,7 @@ def upload_video():
                "use_whisper": request.form.get("use_whisper") != "false",
                "use_context_extender": request.form.get("use_context_extender") == "true",
                "save_to_history": request.form.get("save_to_history") != "false",
+               "ad_chars_per_sec": _opt_float(request.form.get("ad_chars_per_sec")),
                "skip_stage2": request.form.get("skip_stage2") == "true",
                "use_character_bank": request.form.get("use_character_bank") == "true",
                "range_mode": request.form.get("range_mode") or "full",
@@ -899,6 +912,7 @@ def reprocess_route(job_id):
         "lang": data.get("lang") or "en",
         "use_context_extender": bool(data.get("use_context_extender",
                                                job.get("use_context_extender", False))),
+        "ad_chars_per_sec": _opt_float(data.get("ad_chars_per_sec")),
         "skip_stage2": bool(data.get("skip_stage2", False)),
     }
     threading.Thread(target=_reprocess_web_thread,

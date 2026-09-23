@@ -462,14 +462,19 @@ def summarize_to_ad(
 def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str = "gemini", 
                     video_type: str = "movie", examples: List[str] = None,
                     openai_url: str = None, openai_model: str = None,
-                    model: str = None, usage_acc=None, lang: str = None) -> List[dict]:
+                    model: str = None, usage_acc=None, lang: str = None,
+                    ad_chars_per_sec: float = None) -> List[dict]:
     """Batch summarize multiple Stage 1 descriptions."""
     results = []
     for item in stage1_descriptions:
         duration = item["end"] - item["start"]
         # A range the user picked can be arbitrarily short, and duration/speed
         # would then ask for a one- or two-word AD sentence, which is useless.
-        word_limit = estimate_word_limit(duration, video_type, lang)
+        if ad_chars_per_sec:
+            # User overrode the built-in pacing: N chars/sec -> N*duration chars.
+            word_limit = max(1, round(duration * ad_chars_per_sec))
+        else:
+            word_limit = estimate_word_limit(duration, video_type, lang)
         if item.get("mode") == "custom":
             word_limit = max(CUSTOM_MIN_WORD_LIMIT, word_limit)
         try:

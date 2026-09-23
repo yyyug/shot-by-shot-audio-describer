@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="appTitle">BuddyAD</title>
+    <title data-i18n="appTitle">Buddy AD</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
@@ -89,7 +89,7 @@
         <div style="text-align:right; margin-bottom:10px;">
             <button type="button" id="langToggle" style="width:auto; padding:6px 14px; margin:0; font-size:13px;"></button>
         </div>
-        <h1 data-i18n="appTitle">BuddyAD</h1>
+        <h1 data-i18n="appTitle">Buddy AD</h1>
 
         <div class="tabs">
             <button type="button" id="tabTaskBtn" class="tab active" data-i18n="tabTask">New Task</button>
@@ -185,6 +185,15 @@
                 </div>
             </div>
 
+            <div class="form-group checkbox">
+                <input type="checkbox" id="adLenCustom" name="adLenCustom">
+                <label for="adLenCustom" data-i18n="customAdLen">Custom narration length (chars/sec)</label>
+            </div>
+            <div class="form-group hidden" id="adLenCustomGroup">
+                <label for="adCharsPerSec" data-i18n="adCharsPerSec">Characters spoken per second (e.g. 5):</label>
+                <input type="number" id="adCharsPerSec" name="adCharsPerSec" value="5" min="1" max="40" step="0.5">
+            </div>
+            
             <div class="form-group checkbox">
                 <input type="checkbox" id="saveToHistory" name="saveToHistory" checked>
                 <label for="saveToHistory" data-i18n="saveToHistory">Save output data to history</label>
@@ -481,6 +490,9 @@
                 use_whisper: document.getElementById('useWhisper').checked,
                 use_context_extender: document.getElementById('useContextExtender').checked,
                 save_to_history: document.getElementById('saveToHistory').checked,
+                ad_chars_per_sec: document.getElementById('adLenCustom').checked
+                    ? (parseFloat(document.getElementById('adCharsPerSec').value) || 0)
+                    : 0,
                 video_type: document.getElementById('videoType').value,
                 custom_opening: document.getElementById('customPrompt').value.trim(),
                 range_mode: rangeMode(),
@@ -941,11 +953,23 @@
             modelListInputId = null;
         }
 
+        const adLenCustom = document.getElementById('adLenCustom');
+        const adLenCustomGroup = document.getElementById('adLenCustomGroup');
+        const syncAdLen = () => { adLenCustomGroup.classList.toggle('hidden', !adLenCustom.checked); };
+        adLenCustom.addEventListener('change', syncAdLen);
+        syncAdLen();
+
         document.addEventListener('DOMContentLoaded', () => {
             const overlay = document.getElementById('modelListModal');
             document.getElementById('modelListApply').addEventListener('click', applyModelList);
             document.getElementById('modelListCancel').addEventListener('click', closeModelList);
             overlay.addEventListener('click', e => { if (e.target === overlay) closeModelList(); });
+            // Heartbeat: a logged pong below proves the page executed, i18n
+            // applied and the JS<->Python bridge is alive. Missing it means the
+            // window opened but the UI failed before reaching user interaction.
+            if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.ping === 'function') {
+                window.pywebview.api.ping();
+            }
         });
     </script>
 </body>
