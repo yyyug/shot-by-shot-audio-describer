@@ -239,21 +239,25 @@ def process_video_task(task_id, video_path, options):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     try:
         backend = options.get("backend", "gemini")
-        api_key = options.get("api_key") or options.get("gemini_key")        
+        api_key = options.get("api_key") or options.get("gemini_key")
+        save_to_history = bool(options.get("save_to_history", True))
         filename = os.path.basename(video_path)
         if filename.startswith(task_id + "_"):
             filename = filename[len(task_id) + 1:]
-        history.create_job(
-            task_id, filename, DATA_DIR,
-            video_type=options.get("video_type", "movie"),
-            gap_detection_enabled=bool(options.get("use_whisper", True)),
-            use_context_extender=bool(options.get("use_context_extender", False)),
-        )
-        # The source video is deliberately NOT kept: the exact LLM payload
-        # (per-unit frames + rendered prompts) is persisted under
-        # history/<job_id>/ instead, so replays and external agents never need
-        # the video again.
-        logger.info(f"Task {task_id}: source video not archived (frames will be saved)")
+        if save_to_history:
+            history.create_job(
+                task_id, filename, DATA_DIR,
+                video_type=options.get("video_type", "movie"),
+                gap_detection_enabled=bool(options.get("use_whisper", True)),
+                use_context_extender=bool(options.get("use_context_extender", False)),
+            )
+            # The source video is deliberately NOT kept: the exact LLM payload
+            # (per-unit frames + rendered prompts) is persisted under
+            # history/<job_id>/ instead, so replays and external agents never need
+            # the video again.
+            logger.info(f"Task {task_id}: source video not archived (frames will be saved)")
+        else:
+            logger.info(f"Task {task_id}: history saving disabled by user - outputs written to DATA_DIR only")
         # Get video duration for progress display
         import cv2
         cap = cv2.VideoCapture(video_path)
@@ -281,7 +285,8 @@ def process_video_task(task_id, video_path, options):
 
         shots = detect_shots(video_path, callback=shot_progress)
         status["shots_count"] = len(shots)
-        history.save_shots(task_id, shots, DATA_DIR)
+        if save_to_history:
+            history.save_shots(task_id, shots, DATA_DIR)
         logger.info(f"Task {task_id}: {len(shots)} shots detected")
         status["progress"] = 20
         status["detail"] = f"Found {len(shots)} shots"
@@ -305,7 +310,8 @@ def process_video_task(task_id, video_path, options):
             status["detail"] = "Skipped"
             logger.info(f"Task {task_id}: transcription disabled by user")
         status["progress"] = 30
-        history.save_subtitles(task_id, subtitles, DATA_DIR)
+        if save_to_history:
+            history.save_subtitles(task_id, subtitles, DATA_DIR)
 
         # Build AD units: dialogue-gap intervals when transcription succeeded,
         # otherwise one unit per shot (existing behavior)
@@ -361,10 +367,11 @@ def process_video_task(task_id, video_path, options):
         status["detail"] = f"{len(units)} AD units to describe ({units_label})"
         status["progress"] = 40
         logger.info(f"Task {task_id}: built {len(units)} AD units (mode={units_label})")
-        history.save_units(task_id, units, DATA_DIR)
-        history.begin_run(task_id, 0, DATA_DIR, kind="initial",
-                          gap_detection_active=gap_detection_active)
-        history.set_current_run(task_id, 0, DATA_DIR)
+        if save_to_history:
+            history.save_units(task_id, units, DATA_DIR)
+            history.begin_run(task_id, 0, DATA_DIR, kind="initial",
+                              gap_detection_active=gap_detection_active)
+            history.set_current_run(task_id, 0, DATA_DIR)
 
         # Persist the exact image payload for every unit up-front. Doing it once
         # here (instead of inside the description loop) means a replay loads
@@ -373,30 +380,35 @@ def process_video_task(task_id, video_path, options):
         shot_scales = [2] * len(shots)
         threads = [[j for j in range(len(shots))]]
         frame_counts = {}
+        frames_cache = {}
         status["step"] = "frames"
         for i, unit in enumerate(units):
             frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
-            # Context extension follows shots; a user range is not a shot, so it
-            # is deliberately never extended.
+            # Context extension follows shots; a user range is not a shot, so
+            # it is deliberately never extended.
             if options.get("use_context_extender") and shots and unit.get("mode") != "custom":
                 context_shots = _get_context_shots(shots, unit["shot_ids"])
                 frames_b64 = _extract_frames_with_context(video_path, frame_shot, context_shots)
             else:
                 frames_b64 = extract_frames_base64(video_path, frame_shot)
-            history.save_unit_frames(task_id, unit["unit_id"], frames_b64, DATA_DIR)
-            history.save_thumbs_from_unit_frames(task_id, unit, frames_b64, DATA_DIR)
+            if save_to_history:
+                history.save_unit_frames(task_id, unit["unit_id"], frames_b64, DATA_DIR)
+                history.save_thumbs_from_unit_frames(task_id, unit, frames_b64, DATA_DIR)
+            else:
+                frames_cache[str(unit["unit_id"])] = frames_b64
             frame_counts[str(unit["unit_id"])] = len(frames_b64)
             status["detail"] = f"Saving frames {i+1}/{len(units)}"
             status["progress"] = 40 + int(((i + 1) / len(units)) * 5)
-        history.save_frame_manifest(
-            task_id, DATA_DIR,
-            backend=backend,
-            model=options.get("openai_model") or "",
-            use_context_extender=bool(options.get("use_context_extender")),
-            speech_transcription=bool(subtitles),
-            frames_per_unit=frame_counts,
-        )
-        history.write_agent_jsonl(task_id, DATA_DIR, units)
+        if save_to_history:
+            history.save_frame_manifest(
+                task_id, DATA_DIR,
+                backend=backend,
+                model=options.get("model") or options.get("openai_model") or "",
+                use_context_extender=bool(options.get("use_context_extender")),
+                speech_transcription=bool(subtitles),
+                frames_per_unit=frame_counts,
+            )
+            history.write_agent_jsonl(task_id, DATA_DIR, units)
         logger.info(f"Task {task_id}: saved frames for {len(units)} units "
                     f"({sum(frame_counts.values())} images)")
 
@@ -420,9 +432,12 @@ def process_video_task(task_id, video_path, options):
             for i, unit in enumerate(units):
                 try:
                     logger.info(f"Task {task_id}: unit {i+1}/{len(units)} ({unit.get('mode', 'shot')})")
-                    # Replay the exact frames persisted above; the prompt is
+                    # Replay the exact frames (persisted above, or kept in
+                    # memory when history saving is disabled); the prompt is
                     # rebuilt deterministically from the unit + run options.
-                    frames_b64 = history.load_unit_frames(task_id, unit["unit_id"], DATA_DIR)
+                    frames_b64 = (history.load_unit_frames(task_id, unit["unit_id"], DATA_DIR)
+                                  if save_to_history
+                                  else frames_cache.get(str(unit["unit_id"]), []))
                     film_grammar = {"video_type": options.get("video_type", "movie"), "label_type": "none",
                                     "char_text": "", "current_shots": time_ranges.current_shot_indices(unit, shots),
                                     "threads": threads, "shot_scales": shot_scales, "prompt_variant": 4,
@@ -432,14 +447,17 @@ def process_video_task(task_id, video_path, options):
                     desc = describe_frames(frames_b64, api_key, backend=backend, film_grammar=film_grammar,
                                            openai_url=options.get("openai_url"),
                                            openai_model=options.get("openai_model"),
+                                           model=options.get("model"),
                                            usage_acc=stage1_usage)
                     descriptions_dict[unit["unit_id"]] = desc
-                    history.record_unit(task_id, 0, DATA_DIR, unit, desc)
+                    if save_to_history:
+                        history.record_unit(task_id, 0, DATA_DIR, unit, desc)
                     logger.info(f"Task {task_id}: unit {i+1} completed ({len(desc)} chars)")
                     status["detail"] = f"Described unit {i+1}/{len(units)}"
                 except Exception as e:
                     descriptions_dict[unit["unit_id"]] = ""
-                    history.record_unit(task_id, 0, DATA_DIR, unit, "")
+                    if save_to_history:
+                        history.record_unit(task_id, 0, DATA_DIR, unit, "")
                     status["detail"] = f"Unit {i+1} failed: {str(e)[:50]}"
                     logger.error(f"Task {task_id}: unit {i+1}/{len(units)} failed: {e}", exc_info=True)
                     if e is not None:
@@ -499,6 +517,7 @@ def process_video_task(task_id, video_path, options):
                                                 video_type=options.get("video_type", "movie"),
                                                 openai_url=options.get("openai_url"),
                                                 openai_model=options.get("openai_model"),
+                                                model=options.get("model"),
                                                 usage_acc=stage2_usage,
                                                 lang=options.get("lang"))
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
@@ -532,13 +551,14 @@ def process_video_task(task_id, video_path, options):
 
                     # History snapshot for this (initial) run. Root copies are
                     # already written above, so no mirroring is needed here.
-                    history.save_stage2(task_id, 0, DATA_DIR, ad_sentence_map)
-                    history.write_run_files(
-                        task_id, 0, DATA_DIR, stage1_results, stage2_results,
-                        ad_sentence_map, units, mirror_root=False)
-                    history.update_run(task_id, 0, DATA_DIR,
-                                       status="completed", stage1_count=success_count,
-                                       stage2_count=len(ad_sentence_map))
+                    if save_to_history:
+                        history.save_stage2(task_id, 0, DATA_DIR, ad_sentence_map)
+                        history.write_run_files(
+                            task_id, 0, DATA_DIR, stage1_results, stage2_results,
+                            ad_sentence_map, units, mirror_root=False)
+                        history.update_run(task_id, 0, DATA_DIR,
+                                           status="completed", stage1_count=success_count,
+                                           stage2_count=len(ad_sentence_map))
 
                     logger.info(f"Task {task_id}: completed - outputs {timestamp}_DetailsDescription.csv / {timestamp}_AD.csv / {timestamp}-final.csv / {timestamp}-final.vtt")
                 except Exception as stage2_err:
@@ -554,17 +574,19 @@ def process_video_task(task_id, video_path, options):
                         category, _ac.quote_error_detail(stage2_err)
                     )
                     status["partial"] = True
-                    history.update_run(task_id, 0, DATA_DIR,
-                                       status="failed", stage1_count=success_count)
+                    if save_to_history:
+                        history.update_run(task_id, 0, DATA_DIR,
+                                           status="failed", stage1_count=success_count)
                     logger.error(f"Task {task_id}: stage 2 failed (cause={category}) but stage-1 results kept: {stage2_err}")
         else:
             # No API key or stage 2 explicitly skipped: only stage-1 CSV exists.
             status["status"] = "completed"
             status["progress"] = 100
-            history.write_run_files(task_id, 0, DATA_DIR, stage1_results, None,
-                                    {}, units, mirror_root=False)
-            history.update_run(task_id, 0, DATA_DIR,
-                               status="completed", stage1_count=success_count)
+            if save_to_history:
+                history.write_run_files(task_id, 0, DATA_DIR, stage1_results, None,
+                                        {}, units, mirror_root=False)
+                history.update_run(task_id, 0, DATA_DIR,
+                                   status="completed", stage1_count=success_count)
             logger.info(f"Task {task_id}: completed (stage 2 not run) - outputs {timestamp}_DetailsDescription.csv")
     except Exception as e:
         status["status"] = "failed"
@@ -596,11 +618,12 @@ def test_api_route():
     data = request.get_json(silent=True) or {}
     ok, message = test_connection(
         data.get("api_key"),
-        data.get("backend", "gemini-3.7-flash"),
+        data.get("backend", "gemini"),
         data.get("openai_url"),
         data.get("openai_model"),
+        data.get("model"),
     )
-    logger.info(f"API key test: backend={data.get('backend')} url={data.get('openai_url')} model={data.get('openai_model')} ok={ok} - {message}")
+    logger.info(f"API key test: backend={data.get('backend')} url={data.get('openai_url')} model={data.get('openai_model')}/{data.get('model')} ok={ok} - {message}")
     return jsonify({"ok": ok, "message": message})
 
 
@@ -636,11 +659,13 @@ def upload_video():
                "api_key": request.form.get("api_key") or request.form.get("gemini_key"),
                "openai_url": request.form.get("openai_url"),
                "openai_model": request.form.get("openai_model"),
+               "model": request.form.get("model") or "",
                "video_type": request.form.get("video_type", "movie"),
                "custom_opening": (request.form.get("custom_opening") or "").strip() or None,
                "lang": request.form.get("lang") or "en",
                "use_whisper": request.form.get("use_whisper") != "false",
                "use_context_extender": request.form.get("use_context_extender") == "true",
+               "save_to_history": request.form.get("save_to_history") != "false",
                "skip_stage2": request.form.get("skip_stage2") == "true",
                "use_character_bank": request.form.get("use_character_bank") == "true",
                "range_mode": request.form.get("range_mode") or "full",
@@ -868,6 +893,7 @@ def reprocess_route(job_id):
         "api_key": data.get("api_key") or data.get("gemini_key"),
         "openai_url": data.get("openai_url"),
         "openai_model": data.get("openai_model"),
+        "model": data.get("model"),
         "video_type": data.get("video_type", job.get("video_type", "movie")),
         "custom_opening": (data.get("custom_opening") or "").strip() or None,
         "lang": data.get("lang") or "en",

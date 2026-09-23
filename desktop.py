@@ -234,11 +234,11 @@ class AppBridge:
         return None
     
     # API key test
-    def test_api(self, backend, api_key, openai_url=None, openai_model=None):
+    def test_api(self, backend, api_key, openai_url=None, openai_model=None, model=None):
         """Send a tiny prompt through the selected backend; returns
         {"ok": bool, "message": str} for the UI."""
-        logger.info(f"API key test requested: backend={backend} url={openai_url} model={openai_model}")
-        ok, message = test_connection(api_key, backend, openai_url, openai_model)
+        logger.info(f"API key test requested: backend={backend} url={openai_url} model={openai_model}/{model}")
+        ok, message = test_connection(api_key, backend, openai_url, openai_model, model)
         logger.info(f"API key test result: url={openai_url} model={openai_model} ok={ok} - {message}")
         return {"ok": ok, "message": message}
 
@@ -280,6 +280,7 @@ class AppBridge:
     def _process_video_task(self, task_id, video_path, options):
         """Background video processing."""
         status = self.processing_status[task_id]
+        save_to_history = bool((options or {}).get("save_to_history", True))
         
         try:
             # Generate timestamp for file names
@@ -287,13 +288,16 @@ class AppBridge:
 
             # History record: keep only neutral metadata + a local path reference
             # (never the api url / model / api key).
-            history.create_job(
-                task_id, os.path.basename(video_path), DATA_DIR,
-                source_path=video_path,
-                video_type=options.get("video_type", "movie"),
-                gap_detection_enabled=bool(options.get("use_whisper", True)),
-                use_context_extender=bool(options.get("use_context_extender", False)),
-            )
+            if save_to_history:
+                history.create_job(
+                    task_id, os.path.basename(video_path), DATA_DIR,
+                    source_path=video_path,
+                    video_type=options.get("video_type", "movie"),
+                    gap_detection_enabled=bool(options.get("use_whisper", True)),
+                    use_context_extender=bool(options.get("use_context_extender", False)),
+                )
+            else:
+                logger.info("History saving disabled by user - outputs written to DATA_DIR only")
             
             # Get video duration for progress display
             import cv2
@@ -325,7 +329,8 @@ class AppBridge:
             
             shots = detect_shots(video_path, callback=shot_progress)
             status["shots_count"] = len(shots)
-            history.save_shots(task_id, shots, DATA_DIR)
+            if save_to_history:
+                history.save_shots(task_id, shots, DATA_DIR)
             logger.info(f"{len(shots)} shots detected")
             status["detail"] = f"Found {len(shots)} shots"
             status["progress"] = 20
@@ -354,7 +359,8 @@ class AppBridge:
             else:
                 status["detail"] = "Skipped"
             status["progress"] = 30
-            history.save_subtitles(task_id, subtitles, DATA_DIR)
+            if save_to_history:
+                history.save_subtitles(task_id, subtitles, DATA_DIR)
             self.emit_progress(task_id, status)
             
             # Step 3: Build AD units (dialogue gaps when transcribed, else shots)
@@ -406,11 +412,12 @@ class AppBridge:
                 units_label = f"{units_label} + user ranges"
             status["detail"] = f"{len(units)} AD units to describe ({units_label})"
             status["progress"] = 40
-            history.save_units(task_id, units, DATA_DIR)
-            history.begin_run(task_id, 0, DATA_DIR,
-                              kind="initial",
-                              gap_detection_active=bool(subtitles))
-            history.set_current_run(task_id, 0, DATA_DIR)
+            if save_to_history:
+                history.save_units(task_id, units, DATA_DIR)
+                history.begin_run(task_id, 0, DATA_DIR,
+                                  kind="initial",
+                                  gap_detection_active=bool(subtitles))
+                history.set_current_run(task_id, 0, DATA_DIR)
             self.emit_progress(task_id, status)
             logger.info(f"Built {len(units)} AD units")
 
@@ -420,6 +427,7 @@ class AppBridge:
             # copied into the job folder).
             status["step"] = "frames"
             frame_counts = {}
+            frames_cache = {}
             for i, unit in enumerate(units):
                 frame_shot = {"start_time": unit["start"], "end_time": unit["end"]}
                 # Context extension follows shots; a user range is not a shot,
@@ -429,21 +437,25 @@ class AppBridge:
                     frames_b64 = self._extract_frames_with_context(video_path, frame_shot, context_shots)
                 else:
                     frames_b64 = self._extract_frames(video_path, frame_shot)
-                history.save_unit_frames(task_id, unit["unit_id"], frames_b64, DATA_DIR)
-                history.save_thumbs_from_unit_frames(task_id, unit, frames_b64, DATA_DIR)
+                if save_to_history:
+                    history.save_unit_frames(task_id, unit["unit_id"], frames_b64, DATA_DIR)
+                    history.save_thumbs_from_unit_frames(task_id, unit, frames_b64, DATA_DIR)
+                else:
+                    frames_cache[str(unit["unit_id"])] = frames_b64
                 frame_counts[str(unit["unit_id"])] = len(frames_b64)
                 status["detail"] = f"Saving frames {i+1}/{len(units)}"
                 status["progress"] = 40 + int(((i + 1) / len(units)) * 5)
                 self.emit_progress(task_id, status)
-            history.save_frame_manifest(
-                task_id, DATA_DIR,
-                backend=options.get("backend", "gemini"),
-                model=options.get("openai_model") or "",
-                use_context_extender=bool(options.get("use_context_extender")),
-                speech_transcription=bool(subtitles),
-                frames_per_unit=frame_counts,
-            )
-            history.write_agent_jsonl(task_id, DATA_DIR, units)
+            if save_to_history:
+                history.save_frame_manifest(
+                    task_id, DATA_DIR,
+                    backend=options.get("backend", "gemini"),
+                    model=options.get("model") or options.get("openai_model") or "",
+                    use_context_extender=bool(options.get("use_context_extender")),
+                    speech_transcription=bool(subtitles),
+                    frames_per_unit=frame_counts,
+                )
+                history.write_agent_jsonl(task_id, DATA_DIR, units)
             logger.info(f"Saved frames for {len(units)} units ({sum(frame_counts.values())} images)")
 
             # Step 4: Character detection (optional)
@@ -472,9 +484,12 @@ class AppBridge:
                     try:
                         logger.info(f"Processing unit {i+1}/{len(units)}...")
                         
-                        # Replay the exact frames persisted above; the prompt is
+                        # Replay the exact frames (persisted above, or kept in
+                        # memory when history saving is disabled); the prompt is
                         # rebuilt deterministically from the unit + run options.
-                        frames_b64 = history.load_unit_frames(task_id, unit["unit_id"], DATA_DIR)
+                        frames_b64 = (history.load_unit_frames(task_id, unit["unit_id"], DATA_DIR)
+                                      if save_to_history
+                                      else frames_cache.get(str(unit["unit_id"]), []))
 
                         duration = unit["end"] - unit["start"]
                         num_frames = len(frames_b64)
@@ -499,15 +514,18 @@ class AppBridge:
                             backend=backend,
                             film_grammar=film_grammar,
                             openai_url=options.get("openai_url"),
-                            openai_model=options.get("openai_model")
+                            openai_model=options.get("openai_model"),
+                            model=options.get("model")
                         )
                         logger.info(f"Unit {i+1} completed: {len(desc)} chars")
                         descriptions_dict[unit["unit_id"]] = desc
-                        history.record_unit(task_id, 0, DATA_DIR, unit, desc)
+                        if save_to_history:
+                            history.record_unit(task_id, 0, DATA_DIR, unit, desc)
                     except Exception as e:
                         logger.error(f"Unit {i+1} failed: {e}", exc_info=True)
                         descriptions_dict[unit["unit_id"]] = ""
-                        history.record_unit(task_id, 0, DATA_DIR, unit, "")
+                        if save_to_history:
+                            history.record_unit(task_id, 0, DATA_DIR, unit, "")
                         status["detail"] = f"Unit {i+1} failed: {str(e)[:50]}"
                         if e is not None:
                             cat = _api_common().categorize_error(e)
@@ -567,8 +585,9 @@ class AppBridge:
                     status["error"] = _ac.build_stage1_blocked_message(
                         dominant, success_count, len(units)
                     )
-                    history.update_run(task_id, 0, DATA_DIR,
-                                       status="failed", stage1_count=success_count)
+                    if save_to_history:
+                        history.update_run(task_id, 0, DATA_DIR,
+                                           status="failed", stage1_count=success_count)
                     logger.warning(f"Aborting stage 2 - only {success_count}/{len(units)} shots succeeded (cause={dominant})")
                     self.emit_progress(task_id, status)
                 else:
@@ -582,6 +601,7 @@ class AppBridge:
                         video_type=options.get("video_type", "movie"),
                         openai_url=options.get("openai_url"),
                         openai_model=options.get("openai_model"),
+                        model=options.get("model"),
                         lang=options.get("lang")
                     )
                     ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
@@ -610,23 +630,25 @@ class AppBridge:
                     write_vtt(vtt_path, output_df.to_dict("records"))
 
                     logger.info(f"Completed - outputs {timestamp}_DetailsDescription.csv / {timestamp}_AD.csv / {timestamp}-final.csv / {timestamp}-final.vtt")
-                    history.save_stage2(task_id, 0, DATA_DIR, ad_sentence_map)
-                    history.write_run_files(
-                        task_id, 0, DATA_DIR, stage1_results, stage2_results,
-                        ad_sentence_map, units, mirror_root=False)
-                    history.update_run(task_id, 0, DATA_DIR,
-                                       status="completed", stage1_count=success_count,
-                                       stage2_count=len(ad_sentence_map))
+                    if save_to_history:
+                        history.save_stage2(task_id, 0, DATA_DIR, ad_sentence_map)
+                        history.write_run_files(
+                            task_id, 0, DATA_DIR, stage1_results, stage2_results,
+                            ad_sentence_map, units, mirror_root=False)
+                        history.update_run(task_id, 0, DATA_DIR,
+                                           status="completed", stage1_count=success_count,
+                                           stage2_count=len(ad_sentence_map))
 
                     self.emit_progress(task_id, status)
             else:
                 # No API key or stage 2 explicitly skipped: only stage-1 CSV exists.
                 status["status"] = "completed"
                 status["progress"] = 100
-                history.write_run_files(task_id, 0, DATA_DIR, stage1_results, None,
-                                        {}, units, mirror_root=False)
-                history.update_run(task_id, 0, DATA_DIR,
-                                   status="completed", stage1_count=success_count)
+                if save_to_history:
+                    history.write_run_files(task_id, 0, DATA_DIR, stage1_results, None,
+                                            {}, units, mirror_root=False)
+                    history.update_run(task_id, 0, DATA_DIR,
+                                       status="completed", stage1_count=success_count)
                 logger.info(f"Completed (stage 2 not run) - outputs {timestamp}_DetailsDescription.csv")
                 self.emit_progress(task_id, status)
 
@@ -647,8 +669,9 @@ class AppBridge:
                 exc_info=True,
             )
             try:
-                history.update_run(task_id, 0, DATA_DIR,
-                                   status="failed", step=status.get("step"))
+                if save_to_history:
+                    history.update_run(task_id, 0, DATA_DIR,
+                                       status="failed", step=status.get("step"))
             except Exception:
                 pass
             self.emit_progress(task_id, status)

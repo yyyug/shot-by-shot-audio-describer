@@ -32,6 +32,10 @@ SHARED_PAUSE = threading.Event()
 # back off generously.
 PAUSE_SECONDS = 30.0
 
+# Ceiling for a provider-suggested wait (Retry-After / retryDelay / "Please
+# retry in Xs"). Generous, but never lets a single retry hang the task.
+PROVIDER_DELAY_CAP = 300.0
+
 
 class TokenUsage:
     """Accumulates billed token counts across API calls.
@@ -163,28 +167,44 @@ def extract_retry_delay(exc) -> float:
     """Pull the provider's suggested wait from a 429.
 
     Strategies, in order:
-      1. google.genai error detail: 429 body has `{'retryDelay': '16s'}`.
-      2. requests.Response `Retry-After` header (seconds or HTTP date).
+      1. `Retry-After` header on any response object (requests.Response or
+         google.genai's response wrapper).
+      2. Scanning the exception text for:
+         - the google.genai 429 body's `retryDelay` field (only present in the
+           full `str(exc)`, NOT in the error's `.message` attribute), e.g.
+           `'retryDelay': '18s'`;
+         - the human-readable `Please retry in 13.797227119s.` line the same
+           body embeds in the message.
       3. We rely on the caller's own backoff otherwise."""
     resp = getattr(exc, "response", None)
-    if resp is not None and isinstance(resp, requests.Response):
-        retry_after = resp.headers.get("Retry-After")
+    if resp is not None:
+        headers = getattr(resp, "headers", None) or {}
+        retry_after = headers.get("Retry-After")
         if retry_after:
             try:
                 # Seconds form
                 return float(retry_after)
             except ValueError:
                 pass
-            # HTTP-date form - fall through and use our own backoff
-    try:
-        message = str(getattr(exc, "message", "") or exc)
-        import re as _re
-        m = _re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+)", message, _re.I)
-        if m:
-            return float(m.group(1))
-    except Exception:
-        pass
-    return 0.0
+            # HTTP-date form - fall through and scan the text below
+    text = str(getattr(exc, "message", "") or "")
+    if not text:
+        text = str(exc or "")
+    best = 0.0
+    for pat in (
+        r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+)",
+        r"Please retry in (\d+(?:\.\d+)?)s\b",
+        r"retry(?:_|-)in\b\D*?(\d+)\s*s\b",
+    ):
+        try:
+            for m in re.finditer(pat, text, re.I):
+                try:
+                    best = max(best, float(m.group(1)))
+                except ValueError:
+                    continue
+        except Exception:
+            continue
+    return best
 
 
 def should_give_up(status: int) -> bool:
@@ -206,15 +226,15 @@ def classify_crisis(status: int) -> bool:
 def compute_sleep(status: int, exc, attempt, base_delay=1.0, cap=20.0) -> float:
     """Pick how long to sleep before the next attempt.
 
-    * 429: honor the provider's retryDelay when present, otherwise exponential
-      backoff scaled by attempt. Capped so we don't hang forever.
+    * 429: honor the provider's suggested wait (Retry-After / retryDelay /
+      "Please retry in Xs") verbatim, capped at PROVIDER_DELAY_CAP; when the
+      provider gives no hint, fall back to exponential backoff.
     * Others: exponential backoff on our own base_delay.
     """
     if status == 429:
         provider_delay = extract_retry_delay(exc)
         if provider_delay > 0:
-            return min(provider_delay, cap)
-        return min(base_delay * (2 ** attempt), cap)
+            return min(provider_delay, PROVIDER_DELAY_CAP)
     return min(base_delay * (2 ** attempt), cap)
 
 

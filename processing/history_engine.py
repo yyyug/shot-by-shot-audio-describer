@@ -488,7 +488,7 @@ def build_film_grammar(video_type, custom_opening, unit, shots, lang=None):
 def describe_units(units, video_path, job_id, run, data_dir, backend, api_key,
                    openai_url, openai_model, video_type, custom_opening, lang,
                    use_context_extender, shots, status, logger, extractors,
-                   emit=None, progress_start=50):
+                   model=None, emit=None, progress_start=50):
     """Describe each unit, persisting results incrementally into
     runs/<run>/stage1.json. Returns (descriptions, error_categories)."""
     from processing.vlm_describer import describe_frames
@@ -510,7 +510,8 @@ def describe_units(units, video_path, job_id, run, data_dir, backend, api_key,
             film_grammar = build_film_grammar(video_type, custom_opening, unit, shots, lang)
             desc = describe_frames(frames_b64, api_key, backend=backend,
                                    film_grammar=film_grammar,
-                                   openai_url=openai_url, openai_model=openai_model)
+                                   openai_url=openai_url, openai_model=openai_model,
+                                   model=model)
             descriptions[unit["unit_id"]] = desc or ""
             logger.info(f"reprocess unit {i + 1}/{total} done ({len(desc or '')} chars)")
         except Exception as e:
@@ -599,7 +600,7 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
             options.get("custom_opening"),
             options.get("lang"),
             bool(options.get("use_context_extender")), shots, status, logger,
-            extractors, emit=emit, progress_start=50)
+            extractors, model=options.get("model"), emit=emit, progress_start=50)
 
         # Merge: selected units get their fresh descriptions, everything else
         # keeps the previous run's text.
@@ -641,6 +642,7 @@ def reprocess_task(task_id, job_id, selected_unit_ids, options, data_dir,
                 video_type=options.get("video_type", "movie"),
                 openai_url=options.get("openai_url"),
                 openai_model=options.get("openai_model"),
+                model=options.get("model"),
                 lang=options.get("lang"))
             ad_sentence_map = {r["shot_id"]: r["ad_sentence"] for r in stage2_results}
             save_stage2(job_id, new_run, data_dir, ad_sentence_map)

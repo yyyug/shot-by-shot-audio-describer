@@ -26,6 +26,7 @@ DEEPSEEK_API_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-flash"
 QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL = "qwen3.8-flash"
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
 
 # Shared API-call helpers (pause-on-quota, provider backoff, 401 give-up).
 # Imported lazily via _get_api_common() at call time so both frozen builds
@@ -137,7 +138,7 @@ def sample_few_shot_examples(video_type: str, duration_seconds: float, num_examp
     return [examples[i] for i in sampled_indices]
 
 
-def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0, usage_acc=None):
+def _call_gemini(prompt, api_key, model=GEMINI_DEFAULT_MODEL, max_retries=3, retry_delay=1.0, usage_acc=None):
     """Call Gemini API using google-genai library.
 
     Uses the shared API helpers: on a 429/401/403 it pauses every worker on
@@ -153,6 +154,7 @@ def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry
 
     client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
 
+    crisis_slept = False
     for attempt in range(max_retries):
         try:
             # Wait out any global quota crisis triggered by another worker
@@ -173,6 +175,7 @@ def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 common.pause_and_wait(delay)
+                crisis_slept = True
 
             if common.should_give_up(status):
                 # Permanent auth/config error - retrying a dead key is pointless
@@ -180,6 +183,9 @@ def _call_gemini(prompt, api_key, model="gemini-3.5-flash", max_retries=3, retry
                 raise RuntimeError(f"Gemini API failed (permanent error, status {status}): {e}")
 
             if attempt < max_retries - 1:
+                if crisis_slept:
+                    logger.info("Gemini API retry after provider-required wait")
+                    continue
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 logger.info(f"Gemini API retry in {delay:.1f}s")
                 time.sleep(delay)
@@ -220,6 +226,7 @@ def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     url = f"{base_url}/chat/completions" if base_url else OPENAI_API_URL
     logger.info(f"OpenAI API: url={url}, model={model}")
+    crisis_slept = False
     for attempt in range(max_retries):
         try:
             common.wait_if_paused()
@@ -240,9 +247,13 @@ def _call_openai(prompt, api_key, model="gpt-latest", max_retries=3, retry_delay
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 common.pause_and_wait(delay)
+                crisis_slept = True
             if common.should_give_up(status):
                 raise RuntimeError(f"OpenAI API failed (permanent error, status {status}): {e}")
             if attempt < max_retries - 1:
+                if crisis_slept:
+                    logger.info("OpenAI API retry after provider-required wait")
+                    continue
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 time.sleep(delay)
                 continue
@@ -296,7 +307,7 @@ def _http_error_hint(status_code: int) -> str:
     return "Request failed"
 
 
-def test_connection(api_key, backend="gemini-3.7-flash", openai_url=None, openai_model=None):
+def test_connection(api_key, backend="gemini", openai_url=None, openai_model=None, model=None):
     """Send a tiny prompt to verify the credentials work end-to-end.
 
     Returns (ok, message). The message is UI-ready: either a confirmation
@@ -307,10 +318,11 @@ def test_connection(api_key, backend="gemini-3.7-flash", openai_url=None, openai
         if not api_key or not str(api_key).strip():
             return False, "No API key provided"
 
-        if backend.startswith("gemini"):
+        if backend == "gemini":
             from google import genai
             client = genai.Client(api_key=api_key)
-            resp = client.models.generate_content(model=backend, contents=prompt)
+            model_name = model or GEMINI_DEFAULT_MODEL
+            resp = client.models.generate_content(model=model_name, contents=prompt)
             text = ""
             try:
                 text = (resp.text or "").strip()
@@ -318,14 +330,14 @@ def test_connection(api_key, backend="gemini-3.7-flash", openai_url=None, openai
                 pass
             if not text:
                 return False, "Empty response (possible safety block or quota issue)"
-            return True, f"Connection OK - {backend} replied: {text[:50]}"
+            return True, f"Connection OK - {model_name} replied: {text[:50]}"
 
         if backend == "qwen":
             url = QWEN_API_URL + "/chat/completions"
-            model = openai_model or QWEN_MODEL
+            model = model or openai_model or QWEN_MODEL
         elif backend == "deepseek":
             url = DEEPSEEK_API_URL + "/chat/completions"
-            model = openai_model or DEEPSEEK_MODEL
+            model = model or openai_model or DEEPSEEK_MODEL
         else:  # openai-compatible
             base = (openai_url or "https://api.openai.com/v1").rstrip("/")
             url = base + "/chat/completions"
@@ -426,14 +438,14 @@ def summarize_to_ad(
                             text_pred=stage1_description, word_limit=word_limit, examples=examples or [],
                             lang=lang)
     
-    if backend.startswith("gemini"):
-        model = backend  # Use the full model name from dropdown
+    if backend == "gemini":
+        model = model or GEMINI_DEFAULT_MODEL
         ad_text = _call_gemini(prompt, api_key, model, max_retries, retry_delay, usage_acc=usage_acc)
     elif backend == "qwen":
-        model = QWEN_MODEL
+        model = model or openai_model or QWEN_MODEL
         ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay, base_url=QWEN_API_URL, usage_acc=usage_acc)
     elif backend == "deepseek":
-        model = DEEPSEEK_MODEL
+        model = model or openai_model or DEEPSEEK_MODEL
         ad_text = _call_openai(prompt, api_key, model, max_retries, retry_delay, base_url=DEEPSEEK_API_URL, usage_acc=usage_acc)
     elif backend in ("openai", "openai-compatible"):
         model = openai_model or model or "gpt-latest"
@@ -450,7 +462,7 @@ def summarize_to_ad(
 def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str = "gemini", 
                     video_type: str = "movie", examples: List[str] = None,
                     openai_url: str = None, openai_model: str = None,
-                    usage_acc=None, lang: str = None) -> List[dict]:
+                    model: str = None, usage_acc=None, lang: str = None) -> List[dict]:
     """Batch summarize multiple Stage 1 descriptions."""
     results = []
     for item in stage1_descriptions:
@@ -465,7 +477,7 @@ def batch_summarize(stage1_descriptions: List[dict], api_key: str, backend: str 
                                          duration_seconds=duration, video_type=video_type, examples=examples,
                                          word_limit=word_limit,
                                          openai_url=openai_url, openai_model=openai_model, usage_acc=usage_acc,
-                                         lang=lang)
+                                         model=model, lang=lang)
         except Exception as e:
             logger.warning(f"summarize_to_ad failed for shot {item['shot_id']}: {e}", exc_info=True)
             ad_sentence = ""

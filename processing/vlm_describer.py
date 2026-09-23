@@ -20,6 +20,7 @@ DEEPSEEK_API_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-flash"
 QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL = "qwen3.8-flash"
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
 
 
 def _get_api_common():
@@ -80,7 +81,7 @@ def _build_prompt(frames_base64, prompt, film_grammar):
     return prompt
 
 
-def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_retries=3, retry_delay=1.0, usage_acc=None):
+def _call_gemini(frames_base64, api_key, prompt, model=GEMINI_DEFAULT_MODEL, max_retries=3, retry_delay=1.0, usage_acc=None):
     """Call Gemini API using google-genai library.
 
     Shares the pause-on-quota / provider-backoff / 401-give-up behaviour with
@@ -117,6 +118,7 @@ def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_r
         except Exception as e:
             logger.warning(f"Gemini API: could not set thinking_level=high ({e}); using model default")
 
+    crisis_slept = False
     for attempt in range(max_retries):
         try:
             common.wait_if_paused()
@@ -134,9 +136,13 @@ def _call_gemini(frames_base64, api_key, prompt, model="gemini-3.5-flash", max_r
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 common.pause_and_wait(delay)
+                crisis_slept = True
             if common.should_give_up(status):
                 raise RuntimeError(f"Gemini API failed (permanent error, status {status}): {e}")
             if attempt < max_retries - 1:
+                if crisis_slept:
+                    logger.info("Gemini API retry after provider-required wait")
+                    continue
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 logger.info(f"Gemini API retry in {delay:.1f}s")
                 time.sleep(delay)
@@ -190,6 +196,7 @@ def _call_openai(frames_base64, api_key, prompt, model="gpt-latest", max_retries
     url = f"{base_url}/chat/completions" if base_url else OPENAI_API_URL
     logger.info(f"OpenAI API: url={url}, model={model}, frames={len(frames_base64)}, prompt_len={len(prompt)}")
 
+    crisis_slept = False
     for attempt in range(max_retries):
         try:
             common.wait_if_paused()
@@ -210,9 +217,13 @@ def _call_openai(frames_base64, api_key, prompt, model="gpt-latest", max_retries
                 common.pause_all()
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 common.pause_and_wait(delay)
+                crisis_slept = True
             if common.should_give_up(status):
                 raise RuntimeError(f"OpenAI API failed (permanent error, status {status}): {e}")
             if attempt < max_retries - 1:
+                if crisis_slept:
+                    logger.info("OpenAI API retry after provider-required wait")
+                    continue
                 delay = common.compute_sleep(status, e, attempt, base_delay=retry_delay)
                 time.sleep(delay)
                 continue
@@ -238,7 +249,7 @@ def describe_frames(
     Args:
         frames_base64: List of base64-encoded JPEG images
         api_key: API key for the selected backend
-        backend: "gemini-3.7-flash", "gemini-3.5-flash-lite", or "openai-compatible"
+        backend: "gemini", "qwen", "deepseek", or "openai-compatible"
         model: Model identifier (uses backend default if None)
         prompt: Custom prompt (overrides film_grammar)
         film_grammar: Dict with film grammar parameters
@@ -255,13 +266,15 @@ def describe_frames(
     
     prompt = _build_prompt(frames_base64, prompt, film_grammar)
     
-    if backend.startswith("gemini"):
-        model = backend  # Use the full model name from dropdown
+    if backend == "gemini":
+        model = model or GEMINI_DEFAULT_MODEL
         return _call_gemini(frames_base64, api_key, prompt, model, max_retries, retry_delay, usage_acc=usage_acc)
     elif backend == "qwen":
-        return _call_openai(frames_base64, api_key, prompt, QWEN_MODEL, max_retries, retry_delay, base_url=QWEN_API_URL, usage_acc=usage_acc)
+        model = model or QWEN_MODEL
+        return _call_openai(frames_base64, api_key, prompt, model, max_retries, retry_delay, base_url=QWEN_API_URL, usage_acc=usage_acc)
     elif backend == "deepseek":
-        return _call_openai(frames_base64, api_key, prompt, DEEPSEEK_MODEL, max_retries, retry_delay, base_url=DEEPSEEK_API_URL, usage_acc=usage_acc)
+        model = model or DEEPSEEK_MODEL
+        return _call_openai(frames_base64, api_key, prompt, model, max_retries, retry_delay, base_url=DEEPSEEK_API_URL, usage_acc=usage_acc)
     elif backend == "openai-compatible":
         model = openai_model or "gpt-4o"
         return _call_openai(frames_base64, api_key, prompt, model, max_retries, retry_delay, base_url=openai_url, usage_acc=usage_acc)

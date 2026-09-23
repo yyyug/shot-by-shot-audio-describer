@@ -111,8 +111,7 @@
             <div class="form-group">
                 <label for="backend" data-i18n="llm">LLM:</label>
                 <select id="backend" name="backend">
-                    <option value="gemini-3.7-flash" selected>Gemini 3.7 Flash</option>
-                    <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                    <option value="gemini" selected>Gemini</option>
                     <option value="qwen">Qwen Flash</option>
                     <option value="deepseek">DeepSeek Flash</option>
                     <option value="openai-compatible">OpenAI Compatible</option>
@@ -127,6 +126,11 @@
                     <button type="button" id="testKeyBtnMain" data-i18n="test">Test</button>
                 </div>
                 <span id="testResultMain" class="test-result"></span>
+                <label for="llmModel" style="margin-top: 8px;" data-i18n="modelName">Model Name:</label>
+                <div class="model-row">
+                    <input type="text" id="llmModel" name="llmModel" value="gemini-3.8-flash">
+                    <button type="button" data-i18n="modelList" onclick="showModelList('llmModel')">Model list</button>
+                </div>
             </div>
 
             <!-- OpenAI Compatible Settings (hidden by default) -->
@@ -179,6 +183,11 @@
                     </p>
                     <p id="rangeError" style="color:#c00; font-size:12px; margin-top:4px; display:none;"></p>
                 </div>
+            </div>
+
+            <div class="form-group checkbox">
+                <input type="checkbox" id="saveToHistory" name="saveToHistory" checked>
+                <label for="saveToHistory" data-i18n="saveToHistory">Save output data to history</label>
             </div>
             
             <!-- Video type -->
@@ -293,6 +302,12 @@
         });
         
         // Toggle OpenAI Compatible fields
+        const LLM_PRESETS = {
+            gemini: 'gemini-3.8-flash',
+            qwen: 'qwen3.8-flash',
+            deepseek: 'deepseek-flash'
+        };
+        function isPresetName(v) { return Object.values(LLM_PRESETS).includes(v) || v === 'gemini-3.7-flash' || v === 'gemini-3.5-flash-lite'; }
         document.getElementById('backend').addEventListener('change', function() {
             const isOpenAI = this.value === 'openai-compatible';
             const isQwen = this.value === 'qwen';
@@ -301,9 +316,13 @@
             document.getElementById('geminiKeyGroup').classList.toggle('hidden', isOpenAI);
             const keyLabel = document.getElementById('apiKeyLabel');
             if (keyLabel) keyLabel.textContent = isDeepSeek ? 'DeepSeek API Key:' : isQwen ? 'Qwen API Key:' : (I18N.t('geminiKey') || 'API Key:');
-            const modelInput = document.getElementById('openaiModel');
-            if (isOpenAI && modelInput && !modelInput.value.trim()) {
-                modelInput.value = 'qwen/qwen3.8-flash';
+            const modelInput = document.getElementById('llmModel');
+            if (modelInput && !isOpenAI && (isPresetName(modelInput.value.trim()) || !modelInput.value.trim())) {
+                modelInput.value = LLM_PRESETS[this.value] || '';
+            }
+            const oaModelInput = document.getElementById('openaiModel');
+            if (isOpenAI && oaModelInput && !oaModelInput.value.trim()) {
+                oaModelInput.value = 'qwen/qwen3.8-flash';
             }
         });
 
@@ -418,7 +437,8 @@
                 const res = await window.pywebview.api.test_api(
                     b, key,
                     document.getElementById('openaiUrl').value,
-                    document.getElementById('openaiModel').value
+                    document.getElementById('openaiModel').value,
+                    b === 'openai-compatible' ? '' : document.getElementById('llmModel').value.trim()
                 );
                 resultEl.textContent = (res.ok ? I18N.t('okPrefix') : I18N.t('errPrefix')) + res.message;
                 resultEl.classList.add(res.ok ? 'ok' : 'err');
@@ -457,8 +477,10 @@
                 api_key: backend === 'openai-compatible' ? document.getElementById('openaiApiKey').value : document.getElementById('apiKey').value,
                 openai_url: document.getElementById('openaiUrl').value,
                 openai_model: document.getElementById('openaiModel').value,
+                model: backend === 'openai-compatible' ? '' : document.getElementById('llmModel').value.trim(),
                 use_whisper: document.getElementById('useWhisper').checked,
                 use_context_extender: document.getElementById('useContextExtender').checked,
+                save_to_history: document.getElementById('saveToHistory').checked,
                 video_type: document.getElementById('videoType').value,
                 custom_opening: document.getElementById('customPrompt').value.trim(),
                 range_mode: rangeMode(),
@@ -710,8 +732,7 @@
                 <div class="ln-row">
                     <label for="rpBackend">${I18N.t('llm')}:</label>
                     <select id="rpBackend" style="width:auto; min-width:220px; padding:8px;">
-                        <option value="gemini-3.7-flash" selected>Gemini 3.7 Flash</option>
-                        <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                        <option value="gemini" selected>Gemini</option>
                         <option value="qwen">Qwen Flash</option>
                         <option value="deepseek">DeepSeek Flash</option>
                         <option value="openai-compatible">OpenAI Compatible</option>
@@ -720,6 +741,13 @@
                 <div class="ln-row" id="rpKeyRow">
                     <label for="rpKey">${I18N.t('apiKey')}:</label>
                     <input type="password" id="rpKey" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
+                </div>
+                <div class="ln-row" id="rpModelRow">
+                    <label for="rpLlmModel">${I18N.t('modelName')}:</label>
+                    <div class="model-row">
+                        <input type="text" id="rpLlmModel" value="gemini-3.8-flash" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
+                        <button type="button" onclick="showModelList('rpLlmModel')">${I18N.t('modelList')}</button>
+                    </div>
                 </div>
                 <div class="ln-row hidden" id="rpOpenAiRow">
                     <label for="rpUrl">${I18N.t('apiBaseUrl')}:</label>
@@ -742,6 +770,11 @@
                 const isOA = d$('rpBackend').value === 'openai-compatible';
                 d$('rpOpenAiRow').classList.toggle('hidden', !isOA);
                 d$('rpKeyRow').classList.toggle('hidden', isOA);
+                d$('rpModelRow').classList.toggle('hidden', isOA);
+                const m = d$('rpLlmModel');
+                if (!isOA && (isPresetName(m.value.trim()) || !m.value.trim())) {
+                    m.value = LLM_PRESETS[d$('rpBackend').value] || '';
+                }
             });
         }
 
@@ -826,6 +859,7 @@
                 api_key: key,
                 openai_url: isOA ? d$('rpUrl').value.trim() : null,
                 openai_model: isOA ? d$('rpModel').value.trim() : null,
+                model: isOA ? null : d$('rpLlmModel').value.trim(),
                 video_type: currentJob.job.video_type || 'movie',
                 use_context_extender: d$('rpContext').checked,
                 lang: I18N.lang()
