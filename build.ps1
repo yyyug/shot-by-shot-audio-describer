@@ -133,6 +133,38 @@ Write-Step "Running PyInstaller (desktop + web versions - bundles ~1GB of models
 if ($LASTEXITCODE -ne 0) { Write-Warn "PyInstaller build (desktop) failed."; exit 1 }
 Write-Ok "Built: $PortableDir"
 
+# ---------------------------------------------------------------- standalone (Tauri shell)
+# Optional extra: a Rust/Tauri shell that loads the same Flask backend it spawns
+# (BuddyADWeb.exe) into its own WebView2 window. Skips gracefully if Rust or the
+# MSVC build tools are missing.
+Write-Step "Building standalone shell (Tauri/Rust, optional)..."
+$CargoExe = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+$StandaloneManifest = Join-Path $Root "standalone\Cargo.toml"
+$StandaloneExe = Join-Path $Root "standalone\target\release\buddy-ad-standalone.exe"
+$StandaloneDst = Join-Path $PortableDir "BuddyADStandalone.exe"
+if (Test-Path $StandaloneExe) { Remove-Item $StandaloneExe -Force }
+if (Test-Path $CargoExe) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    $vsDir = $null
+    if (Test-Path $vswhere) {
+        $vsDir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    }
+    $vcvars = if ($vsDir) { Join-Path $vsDir "VC\Auxiliary\Build\vcvars64.bat" } else { $null }
+    if ($vcvars -and (Test-Path $vcvars)) {
+        & cmd.exe /c "call `"$vcvars`" >nul 2>&1 && `"$CargoExe`" build --release --manifest-path `"$StandaloneManifest`""
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $StandaloneExe)) {
+            Copy-Item $StandaloneExe $StandaloneDst -Force
+            Write-Ok "Built: $StandaloneDst"
+        } else {
+            Write-Warn "Standalone build failed; continuing without BuddyADStandalone.exe"
+        }
+    } else {
+        Write-Warn "MSVC Build Tools not found; skipping standalone shell."
+    }
+} else {
+    Write-Warn "Cargo not found; skipping standalone shell."
+}
+
 # ---------------------------------------------------------------- few-shot training data
 Write-Step "Bundling few-shot GT training data (stage2\gt_ad_train)..."
 $gtSrc = Join-Path $Root "stage2\gt_ad_train"

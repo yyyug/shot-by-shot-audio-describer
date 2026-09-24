@@ -1,0 +1,12 @@
+[package]
+name = "buddy-ad-standalone"
+version = "1.0.0"
+edition = "2021"
+description = "Buddy AD standalone desktop shell (Tauri 2) loading the local Python web backend"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"

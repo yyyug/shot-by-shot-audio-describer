@@ -46,3 +46,7 @@ Thumbs.db
 
 # Tools
 /tools/ffmpeg/
+
+# Standalone (Tauri shell)
+standalone/target/
+standalone/gen/

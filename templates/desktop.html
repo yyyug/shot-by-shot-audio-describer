@@ -112,8 +112,8 @@
                 <label for="backend" data-i18n="llm">LLM:</label>
                 <select id="backend" name="backend">
                     <option value="gemini" selected>Gemini</option>
-                    <option value="qwen">Qwen Flash</option>
-                    <option value="deepseek">DeepSeek Flash</option>
+                    <option value="qwen">Qwen</option>
+                    <option value="deepseek">DeepSeek</option>
                     <option value="openai-compatible">OpenAI Compatible</option>
                 </select>
             </div>
@@ -137,15 +137,15 @@
             <div class="form-group hidden" id="openaiCompatibleGroup">
                 <label for="openaiUrl" data-i18n="apiBaseUrl">API Base URL:</label>
                 <input type="text" id="openaiUrl" name="openaiUrl" value="https://api.openai.com/v1">
-                <label for="openaiModel" style="margin-top: 8px;" data-i18n="modelName">Model Name:</label>
-                <div class="model-row">
-                    <input type="text" id="openaiModel" name="openaiModel" value="qwen/qwen3.8-flash">
-                    <button type="button" data-i18n="modelList" onclick="showModelList('openaiModel')">Model list</button>
-                </div>
                 <label for="openaiApiKey" style="margin-top: 8px;" data-i18n="apiKey">API Key:</label>
                 <div class="key-row">
                     <input type="password" id="openaiApiKey" name="openaiApiKey">
                     <button type="button" id="testKeyBtnOpenAI" data-i18n="test">Test</button>
+                </div>
+                <label for="openaiModel" style="margin-top: 8px;" data-i18n="modelName">Model Name:</label>
+                <div class="model-row">
+                    <input type="text" id="openaiModel" name="openaiModel" value="qwen/qwen3.8-flash">
+                    <button type="button" data-i18n="modelList" onclick="showModelList('openaiModel')">Model list</button>
                 </div>
                 <span id="testResultOpenAI" class="test-result"></span>
             </div>
@@ -745,8 +745,8 @@
                     <label for="rpBackend">${I18N.t('llm')}:</label>
                     <select id="rpBackend" style="width:auto; min-width:220px; padding:8px;">
                         <option value="gemini" selected>Gemini</option>
-                        <option value="qwen">Qwen Flash</option>
-                        <option value="deepseek">DeepSeek Flash</option>
+                        <option value="qwen">Qwen</option>
+                        <option value="deepseek">DeepSeek</option>
                         <option value="openai-compatible">OpenAI Compatible</option>
                     </select>
                 </div>
@@ -764,13 +764,13 @@
                 <div class="ln-row hidden" id="rpOpenAiRow">
                     <label for="rpUrl">${I18N.t('apiBaseUrl')}:</label>
                     <input type="text" id="rpUrl" value="https://api.openai.com/v1" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
+                    <label for="rpOpenAiKey" style="margin-top:6px;">${I18N.t('apiKey')}:</label>
+                    <input type="password" id="rpOpenAiKey" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
                     <label for="rpModel" style="margin-top:6px;">${I18N.t('modelName')}:</label>
                     <div class="model-row">
                         <input type="text" id="rpModel" value="qwen/qwen3.8-flash" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
                         <button type="button" onclick="showModelList('rpModel')">${I18N.t('modelList')}</button>
                     </div>
-                    <label for="rpOpenAiKey" style="margin-top:6px;">${I18N.t('apiKey')}:</label>
-                    <input type="password" id="rpOpenAiKey" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
                 </div>
                 <div class="ln-row checkbox">
                     <input type="checkbox" id="rpContext" ${d.job.use_context_extender ? 'checked' : ''}>

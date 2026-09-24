@@ -87,6 +87,9 @@ End users who do not have Python can get a self-contained Windows desktop app.
    - Builds with **PyInstaller** into `dist-pyinstaller/BuddyADPortable/`:
      - `BuddyAD.exe` — the **desktop app** (pywebview/WinForms)
      - `BuddyADWeb.exe` — the plain **web server** (headless)
+     - `BuddyADStandalone.exe` — a **Tauri 2 (Rust) shell** that spawns the
+       bundled `BuddyADWeb.exe` hidden in the background and shows the same UI
+       in its own WebView2 window (built with `cargo` + MSVC when available)
      - bundles templates, static files, and the ~235MB quantized SenseVoice models
    - If **Inno Setup 6** (free, https://jrsoftware.org/isinfo.php) is installed,
      also compiles `dist/BuddyAD-Setup.exe` — a single-file **UI installer**
@@ -113,6 +116,14 @@ Notes:
   `hiddenimports` in `packaging/ShotByShotDesktop.spec` and rebuild.
 - `dist-pyinstaller/BuddyADPortable/` can also be zipped and distributed as a
   portable app.
+- **BuddyADStandalone.exe** (`standalone/`) is a ~9MB Rust shell. It launches
+  `BuddyADWeb.exe` next to it (with `SBS_NO_BROWSER=1`, so **no** browser window
+  pops up) or reuses one already running, waits until `http://127.0.0.1:5000`
+  answers, shows the splash, then loads the page into a WebView2 window. It
+  stops the backend it spawned when the window is closed. Its diagnostic log is
+  `%LOCALAPPDATA%\BuddyAd\buddyad_standalone.log`. The build needs Rust
+  (`rustup`, e.g. `rustup install stable-x86_64-pc-windows-msvc`) and the MSVC
+  C++ build tools; `build.ps1` skips it gracefully when they are missing.
 
 ### Build environment packages (`.build-venv`)
 
@@ -335,7 +346,10 @@ app.py  ──  Flask web server
 1. **預先下載模型**（本 repo 已含 — `models/sensevoice/`）。
 2. 執行 `build.ps1`（PowerShell）：
    - 用 **PyInstaller** 打包到 `dist-pyinstaller/BuddyADPortable/`：
-     `BuddyAD.exe`（桌面版，pywebview/WinForms）＋ `BuddyADWeb.exe`（純網頁伺服器，無視窗），
+     `BuddyAD.exe`（桌面版，pywebview/WinForms）＋ `BuddyADWeb.exe`（純網頁伺服器，無視窗）
+     ＋ `BuddyADStandalone.exe`（**Tauri 2 / Rust 外殼**：背景靜默啟動同目錄的
+     `BuddyADWeb.exe`，用自己的 WebView2 視窗載入同一套介面；`build.ps1` 在
+     有 `cargo`＋MSVC 時自動一併建構），
      內含 templates、static 與~235MB 量化版 SenseVoice 模型。
    - 若已安裝 **Inno Setup 6**（免費，https://jrsoftware.org/isinfo.php），
      會一併編譯出 `dist/BuddyAD-Setup.exe` — 單一檔案的 **UI 安裝程式**，
@@ -357,6 +371,13 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 - 若 PyInstaller 漏掉 funasr/modelscope 的動態 import，請在 `packaging/ShotByShotDesktop.spec` 的
   `hiddenimports` 補上後重新打包。
 - `dist-pyinstaller/BuddyADPortable/` 也可直接壓縮成 zip 當作可攜版分發。
+- **BuddyADStandalone.exe**（`standalone/`）係約 9MB 嘅 Rust 外殼。佢會啟動
+  隔離嘅 `BuddyADWeb.exe`（帶 `SBS_NO_BROWSER=1`，**唔會有**瀏覽器彈出），
+  或複用已在運行嘅後端，等待 `http://127.0.0.1:5000` 就緒後，喺 WebView2 視窗
+  載入同一介面；關閉視窗時會停止佢自己啟動嘅後端。診斷 log 喺
+  `%LOCALAPPDATA%\BuddyAd\buddyad_standalone.log`。建構需要 Rust
+  （`rustup`，例如 `rustup install stable-x86_64-pc-windows-msvc`）同 MSVC
+  C++ build tools；`build.ps1` 冇呢啲工具時會自動跳過呢步。
 
 ### 建置環境套件（`.build-venv`）
 

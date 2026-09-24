@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <title>Buddy AD</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f5f6f8; color: #1f2328;
+    }
+    .wrap { text-align: center; }
+    .spinner {
+      width: 44px; height: 44px; margin: 0 auto 18px;
+      border: 4px solid #d7dbe0; border-top-color: #2f6fed;
+      border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    p { font-size: 13px; color: #57606a; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="spinner"></div>
+    <h1>Buddy AD</h1>
+    <p>正在啟動後端服務… / Starting backend…</p>
+  </div>
+</body>
+</html>

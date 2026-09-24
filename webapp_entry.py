@@ -87,6 +87,9 @@ def _pick_port(preferred=5000):
 
 
 def _open_browser_when_ready(url):
+    if os.environ.get("SBS_NO_BROWSER") == "1":
+        logger.info(f"Server ready at {url} (browser opening suppressed by SBS_NO_BROWSER)")
+        return
     import urllib.request
     for _ in range(240):
         try:
