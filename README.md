@@ -85,11 +85,11 @@ End users who do not have Python can get a self-contained Windows desktop app.
 1. **Pre-download the models** (already done in this repo — `models/sensevoice/`).
 2. Run `build.ps1` (PowerShell):
    - Builds with **PyInstaller** into `dist-pyinstaller/BuddyADPortable/`:
-     - `BuddyAD.exe` — the **desktop app** (pywebview/WinForms)
-     - `BuddyADWeb.exe` — the plain **web server** (headless)
-     - `BuddyADStandalone.exe` — a **Tauri 2 (Rust) shell** that spawns the
-       bundled `BuddyADWeb.exe` hidden in the background and shows the same UI
-       in its own WebView2 window (built with `cargo` + MSVC when available)
+     - `BuddyADWeb.exe` — the local **Flask web server** (running it directly
+       opens the browser; the standalone shell spawns it hidden)
+     - `BuddyAD.exe` — the **standalone** Tauri 2 (Rust) shell that spawns the
+       bundled `BuddyADWeb.exe` in the background and shows the same UI in its
+       own WebView2 window (built with `cargo` + MSVC when available)
      - bundles templates, static files, and the ~235MB quantized SenseVoice models
    - If **Inno Setup 6** (free, https://jrsoftware.org/isinfo.php) is installed,
      also compiles `dist/BuddyAD-Setup.exe` — a single-file **UI installer**
@@ -106,24 +106,24 @@ Notes:
   ASR/ML stack (funasr-onnx, librosa/numba, opencv, scipy) are bundled for
   offline use — this is the trade-off for a single offline portable with no
   download on first run.
-- The packaged desktop app stores outputs and the log in
+- The packaged app stores outputs and the log in
   `%LOCALAPPDATA%\BuddyAd\` (writable even under Program Files; delete the
   `WebView2-v2` subfolder to reset a corrupted webview profile).
 - Only `models/sensevoice/` is bundled. Older unrelated files in `models/`
   (`whisper/`, `shot_scale_ckpt.pth`) are **not** used by the current pipeline
   (shot detection is PySceneDetect, not a model file) and are excluded.
 - If PyInstaller misses any dynamic imports (funasr/modelscope), add them to
-  `hiddenimports` in `packaging/ShotByShotDesktop.spec` and rebuild.
+  `hiddenimports` in `packaging/ShotByShotWeb.spec` and rebuild.
 - `dist-pyinstaller/BuddyADPortable/` can also be zipped and distributed as a
   portable app.
-- **BuddyADStandalone.exe** (`standalone/`) is a ~9MB Rust shell. It launches
+- **BuddyAD.exe** (`standalone/`) is a ~9MB Rust shell. It launches
   `BuddyADWeb.exe` next to it (with `SBS_NO_BROWSER=1`, so **no** browser window
   pops up) or reuses one already running, waits until `http://127.0.0.1:5000`
   answers, shows the splash, then loads the page into a WebView2 window. It
   stops the backend it spawned when the window is closed. Its diagnostic log is
-  `%LOCALAPPDATA%\BuddyAd\buddyad_standalone.log`. The build needs Rust
-  (`rustup`, e.g. `rustup install stable-x86_64-pc-windows-msvc`) and the MSVC
-  C++ build tools; `build.ps1` skips it gracefully when they are missing.
+  `%LOCALAPPDATA%\BuddyAd\buddyad.log` (auto-rotated at 5MB). The build needs
+  Rust (`rustup`, e.g. `rustup install stable-x86_64-pc-windows-msvc`) and the
+  MSVC C++ build tools; `build.ps1` skips it gracefully when they are missing.
 
 ### Build environment packages (`.build-venv`)
 
@@ -150,14 +150,14 @@ Hard-won pins / gotchas:
   the pipeline (shot scales come straight from the UI). The spec excludes the
   whole PyTorch stack, shrinking the portable build from a ~90k-file tree to
   ~1,900 files / ~1 GB. torch stays in `requirements-cpu.txt` for dev and tests.
-- With `-Obfuscate`, PyArmor encrypts `desktop.py`, `webapp_entry.py`, `app.py`
+- With `-Obfuscate`, PyArmor encrypts `webapp_entry.py`, `app.py`
   and `processing/*`. Their imports become invisible to PyInstaller's static
   analysis, so **every** import of those modules — including stdlib submodules
   such as `logging.handlers` and `urllib.request` — must be listed in
-  `hiddenimports` (`packaging/ShotByShotDesktop.spec`, see `STDLIB_HIDDEN`).
+  `hiddenimports` (`packaging/ShotByShotWeb.spec`, see `STDLIB_HIDDEN`).
   Miss one and the frozen app exits immediately with `ModuleNotFoundError`.
 
-### Troubleshooting the packaged desktop app
+### Troubleshooting the packaged app
 
 - **Log file**: `%LOCALAPPDATA%\BuddyAd\shot_by_shot.log`. All uncaught
   Python exceptions are written here (excepthook). If a crash produces **no**
@@ -346,10 +346,10 @@ app.py  ──  Flask web server
 1. **預先下載模型**（本 repo 已含 — `models/sensevoice/`）。
 2. 執行 `build.ps1`（PowerShell）：
    - 用 **PyInstaller** 打包到 `dist-pyinstaller/BuddyADPortable/`：
-     `BuddyAD.exe`（桌面版，pywebview/WinForms）＋ `BuddyADWeb.exe`（純網頁伺服器，無視窗）
-     ＋ `BuddyADStandalone.exe`（**Tauri 2 / Rust 外殼**：背景靜默啟動同目錄的
-     `BuddyADWeb.exe`，用自己的 WebView2 視窗載入同一套介面；`build.ps1` 在
-     有 `cargo`＋MSVC 時自動一併建構），
+     `BuddyADWeb.exe`（本機 Flask 網頁伺服器；直接執行會開瀏覽器，由外殼以
+     隱藏方式啟動則唔會）＋ `BuddyAD.exe`（**Tauri 2 / Rust 外殼**：背景靜默
+     啟動同目錄的 `BuddyADWeb.exe`，用自己的 WebView2 視窗載入同一套介面；
+     `build.ps1` 在有 `cargo`＋MSVC 時自動一併建構），
      內含 templates、static 與~235MB 量化版 SenseVoice 模型。
    - 若已安裝 **Inno Setup 6**（免費，https://jrsoftware.org/isinfo.php），
      會一併編譯出 `dist/BuddyAD-Setup.exe` — 單一檔案的 **UI 安裝程式**，
@@ -364,18 +364,18 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
 注意事項：
 - 打包約 1GB（不帶 PyTorch），int8 量化版 SenseVoice 模型與 ASR/ML 依賴
   （funasr-onnx、librosa/numba、opencv、scipy）都隨附在內，以便離線使用。
-- 打包版桌面應用程式的輸出與 log 放在 `%LOCALAPPDATA%\BuddyAd\`（Program Files 下也可寫入；
+- 打包版應用程式的輸出與 log 放在 `%LOCALAPPDATA%\BuddyAd\`（Program Files 下也可寫入；
   若 webview 內容異常，可刪除 `WebView2-v2` 子資料夾重設）。
 - 只打包 `models/sensevoice/`。`models/` 下其他舊檔案（`whisper/`、`shot_scale_ckpt.pth`）
   **目前管線未使用**（鏡頭偵測用 PySceneDetect，不需模型檔），故排除。
-- 若 PyInstaller 漏掉 funasr/modelscope 的動態 import，請在 `packaging/ShotByShotDesktop.spec` 的
+- 若 PyInstaller 漏掉 funasr/modelscope 的動態 import，請在 `packaging/ShotByShotWeb.spec` 的
   `hiddenimports` 補上後重新打包。
 - `dist-pyinstaller/BuddyADPortable/` 也可直接壓縮成 zip 當作可攜版分發。
-- **BuddyADStandalone.exe**（`standalone/`）係約 9MB 嘅 Rust 外殼。佢會啟動
+- **BuddyAD.exe**（`standalone/`）係約 9MB 嘅 Rust 外殼。佢會啟動
   隔離嘅 `BuddyADWeb.exe`（帶 `SBS_NO_BROWSER=1`，**唔會有**瀏覽器彈出），
   或複用已在運行嘅後端，等待 `http://127.0.0.1:5000` 就緒後，喺 WebView2 視窗
   載入同一介面；關閉視窗時會停止佢自己啟動嘅後端。診斷 log 喺
-  `%LOCALAPPDATA%\BuddyAd\buddyad_standalone.log`。建構需要 Rust
+  `%LOCALAPPDATA%\BuddyAd\buddyad.log`（超過 5MB 自動輪替）。建構需要 Rust
   （`rustup`，例如 `rustup install stable-x86_64-pc-windows-msvc`）同 MSVC
   C++ build tools；`build.ps1` 冇呢啲工具時會自動跳過呢步。
 
@@ -402,10 +402,10 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -SkipInno
   目前管線根本不會呼叫（景別直接由 UI 提供）。spec 已排除整包 PyTorch，
   可攜版因此從約 9 萬個檔案縮到約 1,900 檔／約 1GB。torch 仍保留在
   `requirements-cpu.txt` 供開發與測試。
-- 加 `-Obfuscate` 時，PyArmor 會加密 `desktop.py`、`webapp_entry.py`、`app.py`
+- 加 `-Obfuscate` 時，PyArmor 會加密 `webapp_entry.py`、`app.py`
   與 `processing/*`。PyInstaller 的靜態分析看不到這些模組的 import，
   因此**所有**用到的模組——包含標準庫子模組如 `logging.handlers`、
-  `urllib.request`——都必須列在 `packaging/ShotByShotDesktop.spec` 的
+  `urllib.request`——都必須列在 `packaging/ShotByShotWeb.spec` 的
   `hiddenimports`（見 `STDLIB_HIDDEN`）。漏掉一個，打包版會立刻以
   `ModuleNotFoundError` 結束。
 

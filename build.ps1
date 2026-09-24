@@ -1,8 +1,11 @@
-# Shot-by-Shot packaging build (DESKTOP version only)
+# Shot-by-Shot packaging build
 # 1. Creates a fresh build venv (isolated, does not pollute system Python)
-# 2. Installs CPU-only PyTorch + dependencies + PyInstaller (+ PyArmor)
+# 2. Installs dependencies + PyInstaller (+ PyArmor)
 # 3. (Optional) Obfuscates your source with PyArmor
-# 4. Builds a one-folder app (dist\BuddyADPortable)
+# 4. Builds a one-folder app (dist\BuddyADPortable):
+#      - BuddyADWeb.exe   the local Flask web server
+#      - BuddyAD.exe      the standalone Tauri (Rust) shell (built & copied in
+#                         the standalone step below)
 #    including bundled SenseVoice models
 # 5. If Inno Setup is installed, compiles a single-file UI installer
 #    (dist\ShotByShot-Setup.exe) with shortcuts + uninstaller.
@@ -114,34 +117,36 @@ if ($Obfuscate) {
     $VenvPyarmor = Join-Path $BuildVenv "Scripts\pyarmor.exe"
     Write-Step "Obfuscating source with PyArmor..."
     Remove-Item $ObfDir -Recurse -Force -ErrorAction SilentlyContinue
-    & $VenvPyarmor gen -O $ObfDir (Join-Path $Root "desktop.py") (Join-Path $Root "webapp_entry.py") (Join-Path $Root "app.py") (Join-Path $Root "processing")
+    & $VenvPyarmor gen -O $ObfDir (Join-Path $Root "webapp_entry.py") (Join-Path $Root "app.py") (Join-Path $Root "processing")
     if ($LASTEXITCODE -ne 0) { Write-Warn "PyArmor obfuscation failed."; exit 1 }
-    $env:SBS_ENTRY = (Join-Path $ObfDir "desktop.py")
     $env:SBS_WEB_ENTRY = (Join-Path $ObfDir "webapp_entry.py")
-    Write-Ok "Obfuscated entry: $env:SBS_ENTRY"
+    Write-Ok "Obfuscated entry: $env:SBS_WEB_ENTRY"
 } else {
-    Remove-Item Env:SBS_ENTRY -ErrorAction SilentlyContinue
     Remove-Item Env:SBS_WEB_ENTRY -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------- pyinstaller
-Write-Step "Running PyInstaller (desktop + web versions - bundles ~1GB of models, may take 10+ minutes)..."
+Write-Step "Running PyInstaller (web version - bundles ~1GB of models, may take 10+ minutes)..."
 & $VenvPython -m PyInstaller --noconfirm --clean `
     --distpath $DistPath `
     --workpath $WorkPath `
-    (Join-Path $Root "packaging\ShotByShotDesktop.spec")
+    (Join-Path $Root "packaging\ShotByShotWeb.spec")
 if ($LASTEXITCODE -ne 0) { Write-Warn "PyInstaller build (desktop) failed."; exit 1 }
 Write-Ok "Built: $PortableDir"
 
 # ---------------------------------------------------------------- standalone (Tauri shell)
-# Optional extra: a Rust/Tauri shell that loads the same Flask backend it spawns
-# (BuddyADWeb.exe) into its own WebView2 window. Skips gracefully if Rust or the
-# MSVC build tools are missing.
+# The Rust/Tauri shell becomes BuddyAD.exe in the portable folder: it loads the
+# bundled BuddyADWeb.exe (spawned hidden, SBS_NO_BROWSER=1) into its own
+# WebView2 window. Skips gracefully if Rust or the MSVC build tools are missing.
 Write-Step "Building standalone shell (Tauri/Rust, optional)..."
 $CargoExe = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
 $StandaloneManifest = Join-Path $Root "standalone\Cargo.toml"
 $StandaloneExe = Join-Path $Root "standalone\target\release\buddy-ad-standalone.exe"
-$StandaloneDst = Join-Path $PortableDir "BuddyADStandalone.exe"
+$StandaloneDst = Join-Path $PortableDir "BuddyAD.exe"
+$StaleStandalone = @(
+    (Join-Path $PortableDir "BuddyADStandalone.exe"),
+    (Join-Path $PortableDir "BuddyAD_desktop.exe")
+)
 if (Test-Path $StandaloneExe) { Remove-Item $StandaloneExe -Force }
 if (Test-Path $CargoExe) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -153,10 +158,11 @@ if (Test-Path $CargoExe) {
     if ($vcvars -and (Test-Path $vcvars)) {
         & cmd.exe /c "call `"$vcvars`" >nul 2>&1 && `"$CargoExe`" build --release --manifest-path `"$StandaloneManifest`""
         if ($LASTEXITCODE -eq 0 -and (Test-Path $StandaloneExe)) {
+            foreach ($stale in $StaleStandalone) { Remove-Item $stale -Force -ErrorAction SilentlyContinue }
             Copy-Item $StandaloneExe $StandaloneDst -Force
             Write-Ok "Built: $StandaloneDst"
         } else {
-            Write-Warn "Standalone build failed; continuing without BuddyADStandalone.exe"
+            Write-Warn "Standalone build failed; continuing without BuddyAD.exe"
         }
     } else {
         Write-Warn "MSVC Build Tools not found; skipping standalone shell."
@@ -190,9 +196,9 @@ if ($trimmed -gt 0) { Write-Ok "Removed $trimmed license trees." }
 
 # ---------------------------------------------------------------- portable extras
 Write-Step "Adding portable extras (Outputs folder shortcut)..."
-$batSrc = Join-Path $Root "packaging\Shot-by-Shot Outputs.bat"
+$batSrc = Join-Path $Root "packaging\Output folder.bat"
 Copy-Item $batSrc $PortableDir -Force
-Write-Ok "Added 'Shot-by-Shot Outputs.bat' next to the exe."
+Write-Ok "Added 'Output folder.bat' next to the exe."
 
 # ---------------------------------------------------------------- inno setup
 # The installer .iss hardcodes dist\BuddyADPortable, so it only makes sense

@@ -157,7 +157,7 @@
             </div>
             <div class="form-group checkbox">
                 <input type="checkbox" id="useContextExtender" name="useContextExtender">
-                <label for="useContextExtender" data-i18n="useContext">Using multi-shot context to improve AD continuity</label>
+                <label for="useContextExtender" data-i18n="useContext">Using multi-shot context to improve AD continuity (uses several times more tokens)</label>
             </div>
 
             <!-- How much of the video to describe -->
@@ -213,10 +213,6 @@
                 <label for="customPrompt" data-i18n="customPrompt">Custom prompt:</label>
                 <textarea id="customPrompt" name="customPrompt" rows="5"
                     style="width:100%; font-family:inherit;">Please watch the following video, pay extra attention to describing the color palette, lighting, and camera work.</textarea>
-                <p style="color:#888; font-size:12px; margin-top:4px;" data-i18n="customPromptNote">
-                    This replaces the first opening sentence. The "Where different shot numbers are labelled..."
-                    sentence and the rest of the description template are kept as-is.
-                </p>
             </div>
 
             <button type="submit" id="startBtn" data-i18n="start">Start</button>

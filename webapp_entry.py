@@ -1,6 +1,8 @@
 """
 Web UI entry point - starts the local Flask server and opens the browser.
-Packaged as BuddyADWeb.exe alongside BuddyAD.exe.
+Packaged as BuddyADWeb.exe; the standalone BuddyAD.exe launches it hidden
+with SBS_NO_BROWSER=1 (no browser window), while running BuddyADWeb.exe
+directly opens the browser.
 """
 import os
 import sys

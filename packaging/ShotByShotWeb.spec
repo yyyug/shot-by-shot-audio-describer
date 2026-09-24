@@ -1,21 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller spec for Shot-by-Shot: builds BOTH executables into one
-# one-folder bundle that shares a single _internal directory:
+# PyInstaller spec for Shot-by-Shot: builds the ONE web server executable
+# into a one-folder bundle:
 #
-#   - BuddyAD.exe      : pywebview window app (desktop.py)
-#   - BuddyADWeb.exe   : local Flask server + auto browser open
-#                        (webapp_entry.py, console kept visible so the
-#                         user can stop the server by closing it)
+#   - BuddyADWeb.exe : local Flask server (webapp_entry.py). Running it
+#                      directly opens the browser; the standalone BuddyAD.exe
+#                      shell spawns it with SBS_NO_BROWSER=1 so no browser
+#                      window appears.
 #
 # Optional env vars:
-#   SBS_ENTRY      path to a PyArmor-obfuscated desktop.py (protected build)
 #   SBS_WEB_ENTRY  path to a PyArmor-obfuscated webapp_entry.py
 #
-# Usage: pyinstaller packaging\ShotByShotDesktop.spec
+# Usage: pyinstaller packaging\ShotByShotWeb.spec
 
 import os
-import sys
 
 try:
     from PyInstaller.utils.hooks import collect_all
@@ -24,15 +22,12 @@ except ImportError:
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
-DESKTOP_ENTRY = os.environ.get("SBS_ENTRY") or os.path.join(PROJECT_ROOT, "desktop.py")
 WEB_ENTRY = os.environ.get("SBS_WEB_ENTRY") or os.path.join(PROJECT_ROOT, "webapp_entry.py")
-
-DESKTOP_PATH = [os.path.dirname(DESKTOP_ENTRY), PROJECT_ROOT]
 WEB_PATH = [os.path.dirname(WEB_ENTRY), PROJECT_ROOT]
 
 # Third-party deps of the obfuscated modules: PyArmor-encrypted bytecode is
 # opaque to PyInstaller's import analysis, so every import made from
-# desktop.py / webapp_entry.py / processing/* must be listed here.
+# webapp_entry.py / app.py / processing/* must be listed here.
 COMMON_HIDDEN = [
     "processing",
     "processing._api_common",
@@ -74,7 +69,7 @@ COMMON_HIDDEN = [
 ]
 
 # onnxruntime ships many providers/data files that PyInstaller does not pick
-# up otherwise; collect them wholesale into the shared bundle.
+# up otherwise; collect them wholesale into the bundle.
 _ONNX_RT = collect_all("onnxruntime") if collect_all else ([], [], [])
 _ONNX_DATAS, _ONNX_BINARIES, _ONNX_HIDDEN = _ONNX_RT
 FA_ONNX_HIDDEN = []
@@ -138,13 +133,6 @@ STDLIB_HIDDEN = [
     "werkzeug.utils",
 ]
 
-DESKTOP_HIDDEN = COMMON_HIDDEN + STDLIB_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + JIEBA_HIDDEN + [
-    # pywebview backends (edgtw / mshtml / cef) get picked up dynamically
-    "webview",
-    "webview.platforms",
-    "webview.platforms.edgtw",
-]
-
 WEB_HIDDEN = COMMON_HIDDEN + STDLIB_HIDDEN + _ONNX_HIDDEN + FA_ONNX_HIDDEN + JIEBA_HIDDEN + [
     # obfuscated webapp_entry.py's `from app import app` is invisible to
     # static analysis - pull the Flask glue module in explicitly
@@ -163,20 +151,16 @@ EXCLUDES = [
     "PyQt6",
     "PySide2",
     "PySide6",
-    # pywebview ships a backend per platform; the frozen app only ever runs the
-    # EdgeChromium (WebView2) backend on Windows, so keep the others out of the
-    # bundle (also silences the harmless "webview.platforms.edgtw not found"
-    # hidden-import error caused by the obsoleted module name).
+    # The desktop (pywebview) variant is no longer built; drop its backends.
+    "webview",
     "webview.platforms.cef",
     "webview.platforms.gtk",
     "webview.platforms.qt",
     "webview.platforms.mshtml",
     "webview.platforms.cocoa",
-    "webview.platforms.android",
     "webview.platforms.edgtw",
-    "webview.platforms.winforms.mock",
     # Research-only / optional across the dependency tree; nothing imports
-    # these at runtime and dropping them keeps the shared PYZ leaner.
+    # these at runtime and dropping them keeps the PYZ leaner.
     "sympy",
     "pygments",
     "pytest",
@@ -235,23 +219,10 @@ if not _FFMPEG_DATA:
     )
 
 a = Analysis(
-    [DESKTOP_ENTRY],
-    pathex=DESKTOP_PATH,
-    binaries=(_ONNX_BINARIES or []),
-    datas=(DATA + _FFMPEG_DATA + _ONNX_DATAS),
-    hiddenimports=DESKTOP_HIDDEN,
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=EXCLUDES,
-    noarchive=False,
-)
-
-b = Analysis(
     [WEB_ENTRY],
     pathex=WEB_PATH,
-    binaries=[],
-    datas=[],  # templates/static/models are already collected via `a`
+    binaries=(_ONNX_BINARIES or []),
+    datas=(DATA + _FFMPEG_DATA + _ONNX_DATAS),
     hiddenimports=WEB_HIDDEN,
     hookspath=[],
     hooksconfig={},
@@ -260,47 +231,11 @@ b = Analysis(
     noarchive=False,
 )
 
-# Both analyses resolve the same shared modules (processing/*, torch, ...),
-# so merge their TOCs while dropping duplicate entries - PyInstaller errors
-# out on repeated names inside a single PYZ / COLLECT.
-def _merge_unique(primary_toc, secondary_toc):
-    seen = set(item[0] for item in primary_toc)
-    merged = list(primary_toc)
-    for item in secondary_toc:
-        if item[0] not in seen:
-            seen.add(item[0])
-            merged.append(item)
-    return merged
-
-
-pure = _merge_unique(a.pure, b.pure)
-binaries = _merge_unique(a.binaries, b.binaries)
-datas = _merge_unique(a.datas, b.datas)
-
-pyz = PYZ(pure)
-
-exe_desktop = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="BuddyAD",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=False,
-    icon=os.path.join(PROJECT_ROOT, "packaging", "shot.ico"),
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
+pyz = PYZ(a.pure)
 
 exe_web = EXE(
     pyz,
-    b.scripts,
+    a.scripts,
     [],
     exclude_binaries=True,
     name="BuddyADWeb",
@@ -318,10 +253,9 @@ exe_web = EXE(
 )
 
 coll = COLLECT(
-    exe_desktop,
     exe_web,
-    binaries,
-    datas,
+    a.binaries,
+    a.datas,
     strip=False,
     upx=False,
     upx_exclude=[],
